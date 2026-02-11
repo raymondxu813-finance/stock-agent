@@ -1,10 +1,13 @@
 'use client';
 
-import { useState } from 'react';
-import { Menu } from 'lucide-react';
-import type { Discussion } from '@/types';
+import { useState, useRef, useEffect } from 'react';
+import { Menu, SendHorizontal } from 'lucide-react';
+import type { Discussion, AvatarType } from '@/types';
+import { AgentAvatar } from './AgentAvatar';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
+import { AgentSlot, type SlotAgent } from './AgentSlot';
+import { AgentSelectionSheet } from './AgentSelectionSheet';
 
 // 历史话题类型
 interface HistoryTopic {
@@ -22,33 +25,47 @@ type WelcomePageProps = {
   onCreateDiscussion: (discussion: Discussion) => void;
 };
 
-// 默认选择的4个agent
-const DEFAULT_AGENTS = [
+// 全部可用 agent（含头像映射）
+const ALL_AGENTS: (SlotAgent & { agentId: AgentId; color: string; icon: string })[] = [
   {
-    id: 'macro_economist' as AgentId,
+    id: 'macro_economist',
+    agentId: 'macro_economist' as AgentId,
     name: '涨停敢死队长',
+    avatar: 'rocket' as AvatarType,
+    auraColor: 'from-purple-400/20 to-pink-500/10',
     color: 'bg-red-500',
     icon: '🔥',
   },
   {
-    id: 'finance_expert' as AgentId,
+    id: 'finance_expert',
+    agentId: 'finance_expert' as AgentId,
     name: '价值投资苦行僧',
+    avatar: 'safe' as AvatarType,
+    auraColor: 'from-amber-400/20 to-yellow-600/10',
     color: 'bg-emerald-600',
     icon: '🧘',
   },
   {
-    id: 'senior_stock_practitioner' as AgentId,
+    id: 'senior_stock_practitioner',
+    agentId: 'senior_stock_practitioner' as AgentId,
     name: '量化狙击手',
+    avatar: 'lightning' as AvatarType,
+    auraColor: 'from-blue-400/20 to-indigo-600/10',
     color: 'bg-indigo-600',
     icon: '📊',
   },
   {
-    id: 'veteran_stock_tycoon' as AgentId,
+    id: 'veteran_stock_tycoon',
+    agentId: 'veteran_stock_tycoon' as AgentId,
     name: '草根股神老王',
+    avatar: 'rings' as AvatarType,
+    auraColor: 'from-emerald-400/20 to-teal-600/10',
     color: 'bg-amber-600',
     icon: '🎣',
   },
 ];
+
+const MAX_SLOTS = 6;
 
 // 热门话题列表
 const POPULAR_TOPICS = [
@@ -62,27 +79,67 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
   const [topic, setTopic] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const [activeTopicIndex, setActiveTopicIndex] = useState(0);
+  const topicsScrollRef = useRef<HTMLDivElement>(null);
+  // 默认选中全部4个agent
+  const [selectedAgents, setSelectedAgents] = useState<typeof ALL_AGENTS>(
+    [...ALL_AGENTS]
+  );
 
-  // 保存历史话题到localStorage（保存完整的Discussion对象）
+  // Track active topic card scroll position
+  useEffect(() => {
+    const handleScroll = () => {
+      if (topicsScrollRef.current) {
+        const scrollLeft = topicsScrollRef.current.scrollLeft;
+        const cardWidth = topicsScrollRef.current.clientWidth - 40 + 8; // card width + gap
+        const newIndex = Math.round(scrollLeft / cardWidth);
+        setActiveTopicIndex(Math.min(newIndex, POPULAR_TOPICS.length - 1));
+      }
+    };
+    const el = topicsScrollRef.current;
+    if (el) {
+      el.addEventListener('scroll', handleScroll, { passive: true });
+      return () => el.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
+
+  const toggleAgent = (agent: SlotAgent) => {
+    const found = selectedAgents.find(a => a.id === agent.id);
+    if (found) {
+      setSelectedAgents(selectedAgents.filter(a => a.id !== agent.id));
+    } else if (selectedAgents.length < MAX_SLOTS) {
+      const fullAgent = ALL_AGENTS.find(a => a.id === agent.id);
+      if (fullAgent) {
+        setSelectedAgents([...selectedAgents, fullAgent]);
+      }
+    }
+  };
+
+  const removeAgent = (agentId: string) => {
+    setSelectedAgents(selectedAgents.filter(a => a.id !== agentId));
+  };
+
+  // Create array of MAX_SLOTS slots
+  const slots = Array.from({ length: MAX_SLOTS }, (_, index) => selectedAgents[index] || null);
+
+  // 保存历史话题到localStorage
   const saveHistoryTopic = (discussion: Discussion) => {
     try {
       const stored = localStorage.getItem(HISTORY_TOPICS_KEY);
       const topics: HistoryTopic[] = stored ? JSON.parse(stored) : [];
-      
+
       const now = Date.now();
-      // 检查是否已存在
       const existingIndex = topics.findIndex(t => t.id === discussion.id);
       if (existingIndex >= 0) {
-        // 更新现有话题的数据和时间
         topics[existingIndex] = {
           id: discussion.id!,
           title: discussion.title,
-          createdAt: topics[existingIndex].createdAt, // 保留原始创建时间
+          createdAt: topics[existingIndex].createdAt,
           updatedAt: now,
-          discussion: discussion, // 保存完整的讨论数据
+          discussion: discussion,
         };
       } else {
-        // 添加新话题
         topics.push({
           id: discussion.id!,
           title: discussion.title,
@@ -91,8 +148,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
           discussion: discussion,
         });
       }
-      
-      // 限制最多保存50个历史话题
+
       const limitedTopics = topics.slice(0, 50);
       const sortedTopics = limitedTopics.sort((a, b) => b.updatedAt - a.updatedAt);
       localStorage.setItem(HISTORY_TOPICS_KEY, JSON.stringify(sortedTopics));
@@ -103,13 +159,12 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
 
   // 创建讨论的通用函数
   const createDiscussion = async (topicTitle: string) => {
-    if (!topicTitle.trim() || isLoading) return;
+    if (!topicTitle.trim() || isLoading || selectedAgents.length === 0) return;
 
     setIsLoading(true);
     try {
-      const agentIds = DEFAULT_AGENTS.map(a => a.id);
+      const agentIds = selectedAgents.map(a => a.agentId);
 
-      // 创建会话
       const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -127,28 +182,27 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
       }
 
       const { session } = await response.json();
-      
+
       if (!session || !session.id) {
         throw new Error('Invalid session response');
       }
 
-      console.log('[WelcomePage] Session created:', session.id);
-
-      // 创建讨论对象，进入讨论页面
       const discussion: Discussion = {
         id: session.id,
         title: topicTitle.trim(),
         background: '',
-        agents: DEFAULT_AGENTS.map(a => ({
+        agents: selectedAgents.map(a => ({
           id: a.id,
           name: a.name,
           description: '',
           color: a.color,
           icon: a.icon,
-          selected: true, // 默认都选中
+          selected: true,
+          avatarType: a.avatar,
+          auraColor: a.auraColor,
         })),
         rounds: [],
-        comments: [], // 初始化为空数组
+        comments: [],
         moderatorAnalysis: {
           round: 0,
           consensusLevel: 0,
@@ -156,13 +210,11 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
           newPoints: [],
           consensus: [],
           disagreements: [],
-        }, // 初始化 moderatorAnalysis
+        },
         sessionData: session,
       };
 
-      // 保存历史话题（保存完整的Discussion对象）
       saveHistoryTopic(discussion);
-
       onCreateDiscussion(discussion);
     } catch (error) {
       console.error('[WelcomePage] Error creating discussion:', error);
@@ -172,25 +224,29 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
     }
   };
 
-  // 处理输入框提交
   const handleStartDiscussion = async () => {
     await createDiscussion(topic);
   };
 
-  // 处理热门话题点击
   const handleTopicClick = async (topicText: string) => {
     await createDiscussion(topicText);
   };
 
-  // 处理历史话题选择
   const handleSelectHistoryTopic = (discussion: Discussion) => {
-    // 直接使用保存的完整讨论数据，恢复上次的讨论状态
     onCreateDiscussion(discussion);
   };
 
   return (
-    <div className="h-full bg-[#f5f5f5] flex flex-col relative">
-      {/* 历史话题抽屉 - 复用共享组件 */}
+    <div className="h-full bg-white flex flex-col relative">
+      {/* Ambient Particles */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-24 left-10 w-1 h-1 bg-[#AAE874] rounded-full opacity-40 animate-pulse" />
+        <div className="absolute top-32 right-16 w-1.5 h-1.5 bg-[#AAE874] rounded-full opacity-30 animate-pulse" style={{ animationDelay: '0.5s' }} />
+        <div className="absolute top-48 left-20 w-1 h-1 bg-[#AAE874] rounded-full opacity-35 animate-pulse" style={{ animationDelay: '1s' }} />
+        <div className="absolute top-56 right-24 w-1 h-1 bg-[#AAE874] rounded-full opacity-45 animate-pulse" style={{ animationDelay: '1.5s' }} />
+      </div>
+
+      {/* 历史话题抽屉 */}
       <HistoryTopicsDrawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
@@ -198,88 +254,172 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
         isLoading={isLoading}
       />
 
+      {/* Agent Selection Sheet */}
+      <AgentSelectionSheet
+        isOpen={isSheetOpen}
+        onClose={() => setIsSheetOpen(false)}
+        agents={ALL_AGENTS}
+        selectedAgents={selectedAgents}
+        onToggle={toggleAgent}
+        maxSlots={MAX_SLOTS}
+      />
+
       {/* Header */}
-      <div className="px-4 py-3 flex items-center justify-between">
+      <div className="relative px-5 py-4 flex items-center justify-between">
         <button
           onClick={() => setIsDrawerOpen(true)}
-          className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
+          className="w-10 h-10 rounded-full border border-[#E0E0E0] flex items-center justify-center active:scale-95 transition-transform"
         >
-          <Menu className="w-6 h-6 text-gray-900" />
+          <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
         </button>
-        <h1 className="text-lg text-gray-900">MultiAgent</h1>
-        <div className="w-10" /> {/* 占位符，保持居中 */}
+        <h1 className="text-[16px] font-medium text-black">MultiAgent</h1>
+        <div className="w-10" />
       </div>
 
-      {/* Content Area */}
-      <div className="flex-1 flex flex-col items-center justify-center px-8">
-        <p className="text-sm text-gray-500 mb-4">同一个 AI，可能遇到幻觉</p>
-        <h2 className="text-3xl text-gray-900 mb-2">问多个 AI，</h2>
-        <h2 className="text-3xl text-gray-900 mb-4">得到真相</h2>
-        <p className="text-base text-gray-600">重大决定的 AI 顾问团</p>
-      </div>
+      {/* Brand Header — Figma BrandHeader 风格 */}
+      <div className="relative pt-8 pb-6">
+        {/* Centered Brand Icon — Figma GreenSphere */}
+        <div className="flex justify-center mb-10 relative">
+          {/* Floating Particles Around Icon */}
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute top-8 left-[35%] w-1 h-1 bg-[#AAE874] rounded-full opacity-40 animate-pulse" style={{ animationDelay: '0.2s' }} />
+            <div className="absolute top-2 right-[30%] w-1.5 h-1.5 bg-[#AAE874] rounded-full opacity-30 animate-pulse" style={{ animationDelay: '0.7s' }} />
+            <div className="absolute bottom-4 left-[25%] w-1 h-1 bg-[#AAE874] rounded-full opacity-35 animate-pulse" style={{ animationDelay: '1.2s' }} />
+            <div className="absolute bottom-0 right-[38%] w-1 h-1 bg-[#AAE874] rounded-full opacity-45 animate-pulse" style={{ animationDelay: '1.7s' }} />
+          </div>
+          {/* GreenSphere 3D Avatar — 100px, matching Figma BrandHeader */}
+          <div className="relative z-10 drop-shadow-2xl">
+            <AgentAvatar type="sphere" size={100} />
+          </div>
+        </div>
 
-      {/* Selected Agents Display */}
-      <div className="px-4 pb-4">
-        <p className="text-xs text-gray-500 mb-3 px-2">参与讨论的 AI</p>
-        <div className="grid grid-cols-4 gap-3">
-          {DEFAULT_AGENTS.map((agent) => (
-            <div key={agent.id} className="flex flex-col items-center">
-              <div className={`w-14 h-14 ${agent.color} rounded-full flex items-center justify-center text-xl mb-1.5 shadow-md`}>
-                {agent.icon}
-              </div>
-              <span className="text-xs text-gray-900 text-center leading-tight">{agent.name}</span>
-            </div>
-          ))}
+        {/* Left-Aligned Text Content */}
+        <div className="px-5 text-left space-y-2">
+          <p className="text-[14px] text-[#999999] leading-relaxed">
+            同一个 AI，可能遇到幻觉
+          </p>
+          <h2 className="text-[22px] text-black font-medium">问多个 AI，得到真相</h2>
+          <p className="text-[14px] text-[#999999] leading-relaxed">
+            选择你的 AI 顾问团，开始讨论
+          </p>
         </div>
       </div>
 
-      {/* Popular Topics */}
-      <div className="px-4 pb-4">
-        <p className="text-xs text-gray-500 mb-3 px-2">试试这些问题</p>
-        <div className="space-y-2">
+      {/* 2x3 Agent Slot Grid */}
+      <div className="relative px-5 pb-4">
+        <div className="flex flex-col items-center gap-8 mb-4">
+          {/* Row 1 */}
+          <div className="flex justify-center gap-8">
+            {slots.slice(0, 3).map((agent, index) => (
+              <AgentSlot
+                key={index}
+                agent={agent || undefined}
+                onClick={() => setIsSheetOpen(true)}
+                onDelete={agent ? () => removeAgent(agent.id) : undefined}
+              />
+            ))}
+          </div>
+
+          {/* Row 2 */}
+          <div className="flex justify-center gap-8">
+            {slots.slice(3, 6).map((agent, index) => (
+              <AgentSlot
+                key={index + 3}
+                agent={agent || undefined}
+                onClick={() => setIsSheetOpen(true)}
+                onDelete={agent ? () => removeAgent(agent.id) : undefined}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Selection Count */}
+        <div className="text-center mb-4">
+          <p className="text-[14px] text-[#666666]">
+            已选 <span className="font-bold text-[#AAE874]">{selectedAgents.length}/{MAX_SLOTS}</span>
+          </p>
+        </div>
+      </div>
+
+      {/* Recommended Topics Carousel */}
+      <div className="px-5 mb-3 flex-shrink-0">
+        <div
+          ref={topicsScrollRef}
+          className="flex gap-2 overflow-x-auto scrollbar-hide snap-x snap-mandatory scroll-smooth"
+        >
           {POPULAR_TOPICS.map((topicText, index) => (
             <button
               key={index}
               onClick={() => handleTopicClick(topicText)}
-              disabled={isLoading}
-              className="w-full bg-white rounded-2xl px-4 py-3 shadow-sm hover:shadow-md transition-shadow text-left disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={isLoading || selectedAgents.length === 0}
+              className="flex-shrink-0 w-[calc(100%-40px)] snap-start bg-white rounded-full px-4 py-2.5 border border-[#E8E8E8] shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:border-[#AAE874] hover:shadow-[0_4px_12px_rgba(170,232,116,0.2)] active:scale-[0.98] transition-all duration-200 text-left group disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <p className="text-sm text-gray-900">{topicText}</p>
+              <div className="flex items-center gap-2.5">
+                <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#AAE874]/10 flex items-center justify-center group-hover:bg-[#AAE874]/20 transition-colors">
+                  <span className="text-[14px]">💡</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] text-[#333333] font-medium truncate">
+                    {topicText}
+                  </p>
+                </div>
+              </div>
             </button>
+          ))}
+        </div>
+        {/* Dot Indicators */}
+        <div className="flex justify-center gap-1.5 mt-3">
+          {POPULAR_TOPICS.map((_, index) => (
+            <div
+              key={index}
+              className={`rounded-full transition-all duration-200 ${
+                index === activeTopicIndex
+                  ? 'w-4 h-1.5 bg-[#AAE874]'
+                  : 'w-1.5 h-1.5 bg-[#E0E0E0]'
+              }`}
+            />
           ))}
         </div>
       </div>
 
-      {/* Input Area */}
-      <div className="px-4 pb-8">
-        <div className="bg-white rounded-full px-5 py-3 shadow-lg flex items-center gap-3">
-          <input
-            type="text"
-            placeholder="输入话题，开始讨论..."
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            onKeyPress={(e) => {
-              if (e.key === 'Enter' && !isLoading) {
-                handleStartDiscussion();
-              }
-            }}
-            className="flex-1 bg-transparent text-sm text-gray-900 placeholder-gray-400 outline-none"
-          />
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Sticky Action Bar */}
+      <div className="sticky bottom-0 left-0 right-0 px-5 pb-6 pt-4 z-50">
+        {/* Glassmorphic Background with Gradient */}
+        <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
+
+        {/* Input Bar Container */}
+        <div className="relative flex items-center gap-3">
+          {/* Input Field */}
+          <div className="flex-1 relative">
+            <input
+              type="text"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleStartDiscussion()}
+              placeholder="输入话题，开始讨论..."
+              className="w-full px-5 py-3.5 bg-white border border-[#E8E8E8] rounded-full text-[15px] text-black placeholder:text-[#AAAAAA] focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] transition-all shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+            />
+          </div>
+
+          {/* Send Button */}
           <button
             onClick={handleStartDiscussion}
-            disabled={!topic.trim() || isLoading}
-            className={`w-12 h-12 rounded-full flex items-center justify-center shadow-md transition-opacity ${
-              topic.trim() && !isLoading
-                ? 'bg-indigo-500 opacity-100'
-                : 'bg-indigo-500 opacity-50 cursor-not-allowed'
-            }`}
+            disabled={!topic.trim() || isLoading || selectedAgents.length === 0}
+            className={`
+              flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all
+              ${topic.trim() && !isLoading && selectedAgents.length > 0
+                ? 'bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]'
+                : 'bg-[#E8E8E8] cursor-not-allowed opacity-50'
+              }
+            `}
           >
             {isLoading ? (
               <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
             ) : (
-              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-              </svg>
+              <SendHorizontal className="w-5 h-5 text-white" strokeWidth={2.5} />
             )}
           </button>
         </div>

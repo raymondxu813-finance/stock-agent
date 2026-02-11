@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, BookOpen } from 'lucide-react';
 import type { Discussion } from '@/types';
 
 // 历史话题类型（保存完整的Discussion对象）
@@ -23,6 +23,16 @@ type HistoryTopicsDrawerProps = {
   isLoading?: boolean;
 };
 
+// 时间分组辅助
+const getTimeGroup = (timestamp: number): 'today' | 'week' | 'earlier' => {
+  const now = Date.now();
+  const diff = now - timestamp;
+  const oneDay = 24 * 60 * 60 * 1000;
+  if (diff < oneDay) return 'today';
+  if (diff < 7 * oneDay) return 'week';
+  return 'earlier';
+};
+
 export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading = false }: HistoryTopicsDrawerProps) {
   const [historyTopics, setHistoryTopics] = useState<HistoryTopic[]>([]);
 
@@ -33,7 +43,6 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
         const stored = localStorage.getItem(HISTORY_TOPICS_KEY);
         if (stored) {
           const topics = JSON.parse(stored) as any[];
-          // 过滤和验证：只保留有效的历史话题（有discussion字段的）
           const validTopics = topics
             .filter(t => t && t.id && t.title && t.discussion)
             .map(t => ({
@@ -43,8 +52,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
               updatedAt: t.updatedAt || t.createdAt || Date.now(),
               discussion: t.discussion,
             })) as HistoryTopic[];
-          
-          // 按更新时间倒序排列
+
           const sortedTopics = validTopics.sort((a, b) => b.updatedAt - a.updatedAt);
           setHistoryTopics(sortedTopics);
         }
@@ -54,75 +62,117 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
       }
     };
     loadHistoryTopics();
-  }, [isOpen]); // 当抽屉打开时重新加载
+  }, [isOpen]);
 
-  // 处理历史话题点击
   const handleTopicClick = (historyTopic: HistoryTopic) => {
     onClose();
     onSelectTopic(historyTopic.discussion);
   };
 
+  // Group topics by time
+  const todayTopics = historyTopics.filter(t => getTimeGroup(t.updatedAt) === 'today');
+  const weekTopics = historyTopics.filter(t => getTimeGroup(t.updatedAt) === 'week');
+  const earlierTopics = historyTopics.filter(t => getTimeGroup(t.updatedAt) === 'earlier');
+
+  const renderTopicList = (topics: HistoryTopic[]) => (
+    <div className="space-y-2">
+      {topics.map((historyTopic) => (
+        <button
+          key={historyTopic.id}
+          onClick={() => handleTopicClick(historyTopic)}
+          disabled={isLoading}
+          className="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[#F5F5F5] active:bg-[#EEEEEE] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <p className="text-[14px] text-[#333333] line-clamp-2 leading-relaxed">
+            {historyTopic.title}
+          </p>
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <>
-      {/* Drawer Overlay */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-50 z-40"
-          onClick={onClose}
-        />
-      )}
+      {/* Backdrop Overlay */}
+      <div
+        className={`absolute inset-0 bg-black/40 backdrop-blur-sm z-[60] transition-opacity duration-300 ${
+          isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={onClose}
+      />
 
       {/* Drawer */}
       <div
-        className={`fixed top-0 left-0 h-full w-80 bg-white shadow-2xl z-50 transform transition-transform duration-300 ease-in-out ${
+        className={`absolute left-0 top-0 bottom-0 w-[280px] bg-white z-[70] shadow-2xl transition-transform duration-300 ease-out ${
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="h-full flex flex-col">
-          {/* Drawer Header */}
-          <div className="px-4 py-4 flex items-center justify-between border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">历史话题</h2>
-            <button
-              onClick={onClose}
-              className="p-2 -mr-2 hover:bg-gray-100 rounded-full transition-colors"
-            >
-              <X className="w-5 h-5 text-gray-600" />
-            </button>
-          </div>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0F0F0]">
+          <h2 className="text-[19px] font-bold text-black">历史消息</h2>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#F5F5F5] active:scale-95 transition-all"
+          >
+            <X className="w-5 h-5 text-[#666666]" strokeWidth={2} />
+          </button>
+        </div>
 
-          {/* History Topics List */}
-          <div className="flex-1 overflow-y-auto">
-            {historyTopics.length === 0 ? (
-              <div className="px-4 py-8 text-center">
-                <p className="text-sm text-gray-500">暂无历史话题</p>
-              </div>
-            ) : (
-              <div className="px-2 py-2">
-                {historyTopics.map((historyTopic) => (
-                  <button
-                    key={historyTopic.id}
-                    onClick={() => handleTopicClick(historyTopic)}
-                    disabled={isLoading}
-                    className="w-full px-4 py-3 mb-2 text-left bg-white rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-gray-100"
-                  >
-                    <p className="text-sm text-gray-900 font-medium mb-1">{historyTopic.title}</p>
-                    <p className="text-xs text-gray-500">
-                      {historyTopic.discussion?.rounds && historyTopic.discussion.rounds.length > 0
-                        ? `${historyTopic.discussion.rounds.length} 轮讨论`
-                        : '新话题'}
-                      {' · '}
-                      {new Date(historyTopic.updatedAt || historyTopic.createdAt || Date.now()).toLocaleString('zh-CN', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* New Chat Button */}
+        <div className="px-5 pt-5 pb-4">
+          <button
+            onClick={() => {
+              onClose();
+              // Navigate to home handled by parent
+            }}
+            className="w-full h-11 rounded-full border-2 border-[#AAE874] bg-white text-[15px] font-bold text-black flex items-center justify-center gap-2 active:scale-[0.98] transition-all hover:bg-[#AAE874]/5"
+          >
+            <span className="text-[20px] text-[#AAE874]">+</span>
+            新建对话
+          </button>
+        </div>
+
+        {/* Scrollable History */}
+        <div className="flex-1 overflow-y-auto pb-20" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+          {historyTopics.length === 0 ? (
+            <div className="px-5 py-8 text-center">
+              <p className="text-[14px] text-[#999999]">暂无历史话题</p>
+            </div>
+          ) : (
+            <>
+              {/* Today Section */}
+              {todayTopics.length > 0 && (
+                <div className="px-5 pb-4">
+                  <h3 className="text-[12px] font-bold text-[#999999] mb-3">今天</h3>
+                  {renderTopicList(todayTopics)}
+                </div>
+              )}
+
+              {/* Last 7 Days Section */}
+              {weekTopics.length > 0 && (
+                <div className="px-5 pb-4">
+                  <h3 className="text-[12px] font-bold text-[#999999] mb-3">7天内</h3>
+                  {renderTopicList(weekTopics)}
+                </div>
+              )}
+
+              {/* Earlier Section */}
+              {earlierTopics.length > 0 && (
+                <div className="px-5 pb-4">
+                  <h3 className="text-[12px] font-bold text-[#999999] mb-3">更早</h3>
+                  {renderTopicList(earlierTopics)}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer - User Guide */}
+        <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-[#F0F0F0] px-5 py-4">
+          <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-[#F5F5F5] active:bg-[#EEEEEE] transition-colors">
+            <BookOpen className="w-5 h-5 text-[#666666]" strokeWidth={2} />
+            <span className="text-[14px] text-[#333333] font-medium">使用指南</span>
+          </button>
         </div>
       </div>
     </>

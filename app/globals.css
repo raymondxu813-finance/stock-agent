@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ======= H5 Mobile Baseline ======= */
+/* 基准：iPhone 14/15 → 390×844 */
+:root {
+  --app-max-w: 390px;
+  --app-max-h: 844px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 全局默认：移动端满屏，防止橡皮筋效果 */
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* Custom scrollbar for webkit browsers */
 ::-webkit-scrollbar {
   width: 4px;
@@ -49,4 +66,26 @@ textarea:focus {
 
 .modal-enter {
   animation: slideUp 0.3s ease-out;
+}
+
+/* Hide scrollbar utility */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Slide-up animation for bottom sheets */
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
 }

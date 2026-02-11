@@ -1,21 +1,69 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, Edit3, ChevronDown, ArrowDown, X, FileText, Send } from 'lucide-react';
-import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent } from '@/types';
+import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, X, FileText, SendHorizontal, Check, AlertCircle, Lightbulb } from 'lucide-react';
+import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType } from '@/types';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
+import { AgentAvatar } from './AgentAvatar';
 
-// 气泡背景色映射：根据agent的color类名返回对应的淡色背景
-const getBubbleBgColor = (agentColor: string): string => {
-  if (agentColor.includes('emerald')) return 'bg-emerald-50';
-  if (agentColor.includes('orange')) return 'bg-orange-50';
-  if (agentColor.includes('gray-800') || agentColor.includes('gray-900')) return 'bg-slate-100';
-  if (agentColor.includes('blue')) return 'bg-blue-50';
-  if (agentColor.includes('purple')) return 'bg-purple-50';
-  if (agentColor.includes('red')) return 'bg-red-50';
-  if (agentColor.includes('indigo')) return 'bg-indigo-50';
-  if (agentColor.includes('amber')) return 'bg-amber-50';
-  return 'bg-gray-50';
+// 根据 agent 信息获取头像类型
+const getAvatarType = (agent: Agent): AvatarType => {
+  if (agent.avatarType) return agent.avatarType;
+  // Fallback: 根据 agent id 映射
+  if (agent.id.includes('macro_economist')) return 'rocket';
+  if (agent.id.includes('finance_expert')) return 'safe';
+  if (agent.id.includes('senior_stock')) return 'lightning';
+  if (agent.id.includes('veteran_stock')) return 'rings';
+  if (agent.id.includes('crystal') || agent.id.includes('analyst')) return 'crystal';
+  return 'sphere';
+};
+
+// 根据 agentId 从 agents 数组查找并获取头像类型
+const getAvatarTypeById = (agentId: string, agents: Agent[]): AvatarType => {
+  const agent = agents.find(a => a.id === agentId);
+  if (agent) return getAvatarType(agent);
+  return 'sphere';
+};
+
+// Figma 统一气泡背景色
+const BUBBLE_BG = 'bg-[#F8F8F8]';
+
+/**
+ * 从流式 JSON 缓冲区中提取 overallSummary 的纯文本内容
+ * LLM 返回完整 JSON，打字机阶段只展示 overallSummary 字段的文本
+ */
+const extractSummaryFromJsonStream = (raw: string): string => {
+  // 尝试找到 "overallSummary" 字段
+  const key = '"overallSummary"';
+  const idx = raw.indexOf(key);
+  if (idx === -1) return ''; // 还没流到 overallSummary，不展示
+
+  // 跳过 key + 冒号 + 可选空白 + 开头引号
+  let start = idx + key.length;
+  // 跳过 : 和空白
+  while (start < raw.length && (raw[start] === ':' || raw[start] === ' ' || raw[start] === '\n')) start++;
+  // 跳过开头引号
+  if (start < raw.length && raw[start] === '"') start++;
+
+  // 从 start 开始提取到下一个未转义的 " 或字符串末尾
+  let result = '';
+  let i = start;
+  while (i < raw.length) {
+    if (raw[i] === '\\' && i + 1 < raw.length) {
+      // 处理转义字符
+      const next = raw[i + 1];
+      if (next === 'n') { result += '\n'; i += 2; continue; }
+      if (next === '"') { result += '"'; i += 2; continue; }
+      if (next === '\\') { result += '\\'; i += 2; continue; }
+      if (next === 't') { result += '\t'; i += 2; continue; }
+      result += next; i += 2; continue;
+    }
+    if (raw[i] === '"') break; // 闭合引号，overallSummary 结束
+    result += raw[i];
+    i++;
+  }
+
+  return result;
 };
 
 // @提及高亮：获取 agent color 对应的文字颜色
@@ -336,13 +384,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             
             if (data.type === 'chunk') {
               // chunk 到达 → typing 状态
-              setSummaryStreamStatus('typing');
               summaryBuffer += data.content;
-              setCurrentSummaryText(summaryBuffer);
+              // 从 JSON 流中提取 overallSummary 纯文本展示
+              const extracted = extractSummaryFromJsonStream(summaryBuffer);
+              if (extracted) {
+                setSummaryStreamStatus('typing');
+                setCurrentSummaryText(extracted);
+              } else {
+                // 还没到 overallSummary 字段，保持 thinking 状态
+                setSummaryStreamStatus('thinking');
+              }
             } else if (data.type === 'done') {
               roundSummary = data.roundSummary;
               updatedSession = data.session;
-              setCurrentSummaryText(data.roundSummary?.overallSummary || summaryBuffer);
+              setCurrentSummaryText(data.roundSummary?.overallSummary || '');
               setSummaryStreamStatus(null); // 完成
               if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
                 currentRoundPromptsRef.current.moderator = {
@@ -672,16 +727,17 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     }
   };
 
-  const toggleExpanded = (roundIndex: number, agentId: string) => {
+  const toggleExpanded = (roundIndex: number, commentKey: string) => {
     const updatedRounds = rounds.map(round => {
       if (round.roundIndex === roundIndex) {
         return {
           ...round,
-          comments: round.comments.map(comment =>
-            comment.agentId === agentId
+          comments: round.comments.map((comment, idx) => {
+            const key = `${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${idx}`;
+            return key === commentKey
               ? { ...comment, expanded: !(comment.expanded ?? false) }
-              : { ...comment, expanded: comment.expanded ?? false }
-          ),
+              : { ...comment, expanded: comment.expanded ?? false };
+          }),
         };
       }
       return round;
@@ -982,8 +1038,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#ededed] relative">
-      {/* 历史话题抽屉 - 复用共享组件 */}
+    <div className="h-full flex flex-col bg-white relative">
+      {/* 历史话题抽屉 */}
       <HistoryTopicsDrawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
@@ -991,109 +1047,141 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         isLoading={isLoading}
       />
 
-      {/* Header - 群聊风格 */}
-      <div className="bg-white px-4 py-2.5 flex items-center border-b border-gray-200 relative z-10">
-        <button
-          onClick={() => setIsDrawerOpen(true)}
-          className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
-        >
-          <Menu className="w-5 h-5 text-gray-700" />
-        </button>
-        <div className="flex-1 text-center px-2">
-          <h1 className="text-base font-medium text-gray-900 leading-tight truncate">{discussion.title}</h1>
+      {/* Header - Figma DiscussionHeader 风格 */}
+      <div className="sticky top-0 z-40 bg-white border-b border-[#F0F0F0]">
+        <div className="flex items-center justify-between px-5 py-4">
+          {/* Hamburger Menu - Left */}
+          <button
+            onClick={() => setIsDrawerOpen(true)}
+            className="w-10 h-10 rounded-full border border-[#E0E0E0] flex items-center justify-center active:scale-95 transition-transform"
+          >
+            <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+          </button>
+
+          {/* Title - Center */}
+          <h1 className="text-[16px] font-medium text-black flex-1 text-center px-2 truncate">{discussion.title}</h1>
+
+          {/* New Chat Icon - Right */}
+          <button
+            onClick={onBack}
+            className="w-10 h-10 rounded-lg border border-[#E0E0E0] flex items-center justify-center active:scale-95 transition-transform"
+          >
+            <PenSquare className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+          </button>
         </div>
-        <button
-          onClick={onBack}
-          className="p-2 -mr-2 hover:bg-gray-100 rounded-full transition-colors"
-        >
-          <Edit3 className="w-5 h-5 text-gray-700" />
-        </button>
       </div>
 
-      {/* Content */}
-      <div ref={contentRef} className="flex-1 overflow-y-auto pb-24" style={{ maxHeight: 'calc(100vh - 110px)' }}>
-        <div className="px-4 pt-2 pb-4 space-y-2">
-          {/* Session Header - 群公告风格窄条 */}
-          <div 
-            className="sticky top-0 z-20 flex justify-center py-1.5"
+      {/* AnalysisReportEntry - Figma 风格 sticky card */}
+      {rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) && (
+        <div className="sticky top-[60px] z-30 px-5 py-3 bg-white">
+          <button
             onClick={() => setShowSummary(true)}
+            className="w-full bg-white rounded-[18px] p-5 border border-[#AAE874]/30 shadow-[0_4px_20px_rgba(170,232,116,0.15),0_2px_8px_rgba(0,0,0,0.06)] hover:shadow-[0_6px_28px_rgba(170,232,116,0.25),0_4px_12px_rgba(0,0,0,0.08)] active:scale-[0.98] transition-all duration-200 flex items-center justify-between group"
           >
-            <div className="bg-white/80 backdrop-blur-sm rounded-full px-4 py-1.5 flex items-center gap-2 cursor-pointer hover:bg-white/90 transition-colors shadow-sm border border-gray-200/50">
-              <svg className="w-3.5 h-3.5 text-indigo-500" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
-                <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
-              </svg>
-              <span className="text-xs text-gray-600 max-w-[200px] truncate">{discussion.title}</span>
-              <span className="text-xs text-gray-400">·</span>
-              <span className="text-xs text-indigo-500">第{rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : 1}轮</span>
-              <ChevronDown className="w-3 h-3 text-gray-400" />
+            <div className="flex items-center gap-4">
+              <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-br from-[#AAE874] to-[#8FD055] flex items-center justify-center shadow-[0_4px_12px_rgba(170,232,116,0.3)]">
+                <FileText className="w-6 h-6 text-white" strokeWidth={2.5} />
+                <div className="absolute inset-0 rounded-2xl bg-white/10" />
+              </div>
+              <div className="flex flex-col items-start">
+                <span className="text-[16px] font-bold text-black tracking-tight">分析报告</span>
+                <span className="text-[12px] text-[#666666] font-medium mt-0.5">AI Council Summary Report</span>
+              </div>
             </div>
-          </div>
+            <ChevronRight className="w-5 h-5 text-[#BBBBBB] group-hover:text-[#AAE874] group-hover:translate-x-0.5 transition-all duration-200" strokeWidth={2.5} />
+          </button>
+        </div>
+      )}
 
-          {/* 多轮讨论瀑布流 - 群聊风格 */}
+      {/* Content */}
+      <div ref={contentRef} className="flex-1 overflow-y-auto pb-28">
+        <div className="space-y-0 pb-4">
+          {/* 多轮讨论瀑布流 */}
           {rounds.map((round, roundIdx) => (
-            <div key={`round-${round.roundIndex}-${roundIdx}`} className="space-y-3">
+            <div key={`round-${round.roundIndex}-${roundIdx}`}>
               {/* 轮次分隔 - 居中胶囊 */}
-              <div className="flex justify-center py-2">
-                <span className="bg-gray-200/80 text-gray-500 text-xs px-3 py-1 rounded-full">
-                  第 {round.roundIndex} 轮讨论
+              <div className="flex justify-center py-4">
+                <span className="px-4 py-1.5 bg-[#AAE874]/15 text-[#AAE874] text-[12px] font-bold rounded-full">
+                  第 {round.roundIndex} 轮
                 </span>
               </div>
 
-              {/* Agent Comments - 群聊气泡 */}
-              {round.comments.map((comment, commentIdx) => (
-                <div key={`${round.roundIndex}-${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${commentIdx}`} className="flex items-start gap-2.5">
-                  {/* 头像 */}
-                  <div className={`w-9 h-9 ${comment.agentColor} rounded-lg flex-shrink-0 flex items-center justify-center text-white text-sm font-medium shadow-sm`}>
-                    {comment.agentName[0]}
+              {/* Agent Comments - Figma ChatBubble 风格 */}
+              {round.comments.map((comment, commentIdx) => {
+                const isExpanded = comment.expanded ?? false;
+                const shouldTruncate = !isExpanded && !comment.streamStatus && comment.content.length > 200;
+                const displayContent = shouldTruncate ? comment.content.substring(0, 200) + '...' : comment.content;
+
+                return (
+                <div key={`${round.roundIndex}-${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${commentIdx}`} className="flex gap-3 px-5 py-4">
+                  {/* 3D Avatar */}
+                  <div className="flex-shrink-0">
+                    <AgentAvatar type={getAvatarTypeById(comment.agentId, discussion.agents)} size={36} />
                   </div>
                   {/* 名称 + 状态 + 气泡 */}
-                  <div className="max-w-[85%] min-w-0">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className="text-xs text-gray-500">{comment.agentName}</span>
-                      {comment.type === 'reply' && comment.replyRound && !comment.streamStatus && (
-                        <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-600 rounded-full">回复{comment.replyRound}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2 mb-1.5">
+                      <h4 className="text-[14px] font-bold text-black">{comment.agentName}</h4>
+                      {/* 回复目标指示 */}
+                      {comment.type === 'reply' && comment.targetAgentName && !comment.streamStatus && (
+                        <span className="text-[11px] text-[#999999] flex items-center gap-0.5">
+                          → <span className="font-medium text-[#666666]">{comment.targetAgentName}</span>
+                        </span>
                       )}
-                      {/* 流式状态指示 */}
+                      {comment.type === 'reply' && comment.replyRound && !comment.streamStatus && (
+                        <span className="text-[11px] px-2 py-0.5 bg-[#AAE874]/15 text-[#AAE874] font-bold rounded-full">回复{comment.replyRound}</span>
+                      )}
+                      {/* 流式状态指示 - 绿色主题 */}
                       {comment.streamStatus === 'thinking' && (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-amber-500 animate-pulse">
-                          <span className="relative flex h-1.5 w-1.5">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
-                          </span>
+                        <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
                           thinking
+                          <span className="inline-flex gap-0.5">
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
                         </span>
                       )}
                       {comment.streamStatus === 'typing' && (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
-                          <span className="flex gap-0.5">
-                            <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                            <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                            <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                          </span>
+                        <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
                           typing
+                          <span className="inline-flex gap-0.5">
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
                         </span>
                       )}
                     </div>
                     {/* 气泡：thinking状态显示占位气泡，有内容时显示正常气泡 */}
                     {comment.streamStatus === 'thinking' && !comment.content ? (
-                      <div className={`${getBubbleBgColor(comment.agentColor)} rounded-2xl rounded-tl-md px-3.5 py-2.5 shadow-sm`}>
-                        <div className="flex gap-1 py-1">
-                          <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                          <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                          <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                      <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-[#EEEEEE]`}>
+                        <div className="flex gap-1.5 py-1">
+                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
                         </div>
                       </div>
                     ) : (
-                      <div className={`${getBubbleBgColor(comment.agentColor)} rounded-2xl rounded-tl-md px-3.5 py-2.5 shadow-sm`}>
-                        <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-words">
-                          {renderContentWithMentions(comment.content, discussion.agents)}
+                      <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-[#EEEEEE]`}>
+                        <div className="text-[14px] text-[#333333] leading-relaxed whitespace-pre-wrap break-words">
+                          {renderContentWithMentions(displayContent, discussion.agents)}
+                          {comment.streamStatus === 'typing' && <span className="inline-block w-0.5 h-4 bg-[#AAE874] ml-0.5 animate-pulse" />}
                         </div>
+                        {/* 展开/收起 — 仅对超过200字的完成态消息 */}
+                        {!comment.streamStatus && comment.content.length > 200 && (
+                          <button
+                            onClick={() => toggleExpanded(round.roundIndex, `${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${commentIdx}`)}
+                            className="mt-2 text-[13px] text-[#AAE874] font-medium hover:underline"
+                          >
+                            {isExpanded ? '收起' : '查看全部'}
+                          </button>
+                        )}
                       </div>
                     )}
                     {/* 情绪标签 */}
                     {comment.sentiments && comment.sentiments.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      <div className="flex flex-wrap gap-1.5 mt-2">
                         {comment.sentiments.map((s, sIdx) => (
                           <span
                             key={sIdx}
@@ -1102,7 +1190,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                 ? 'bg-red-50 text-red-600 border border-red-200'
                                 : s.sentiment === 'bearish'
                                 ? 'bg-green-50 text-green-600 border border-green-200'
-                                : 'bg-gray-50 text-gray-500 border border-gray-200'
+                                : 'bg-[#F8F8F8] text-[#666666] border border-[#EEEEEE]'
                             }`}
                           >
                             <span>{s.sentiment === 'bullish' ? '📈' : s.sentiment === 'bearish' ? '📉' : '➖'}</span>
@@ -1119,162 +1207,200 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
 
-              {/* Moderator Analysis - 居中系统消息 */}
-              {/* 仅在已完成的轮次 或 summary阶段 才显示主持人区块 */}
+              {/* Moderator Analysis - Figma ConsensusCard 风格 */}
               {(!(round as any)._isInProgress || (round as any)._showModerator) && (() => {
                 const isStreaming = !!(round as any)._summaryStreamStatus;
                 const isComplete = !isStreaming && round.moderatorAnalysis.consensusLevel > 0;
                 const cl = round.moderatorAnalysis.consensusLevel;
                 return (
-              <div className="flex justify-center py-1.5">
-                <div 
-                  className="w-[92%] bg-white/95 backdrop-blur-sm rounded-2xl px-4 py-3.5 shadow-sm border border-gray-200/60 cursor-pointer hover:shadow-md transition-all"
-                  onClick={() => setShowSummary(true)}
-                >
-                  {/* 标题行：主持人头像 + 名称 + 状态 */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-6 h-6 bg-indigo-500 rounded-full flex items-center justify-center flex-shrink-0">
-                      <svg className="w-3.5 h-3.5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
-                      </svg>
+              <div className="mx-5 my-4">
+                <div className="relative">
+                  {/* Outer Glow */}
+                  <div className="absolute inset-0 bg-[#AAE874] opacity-[0.08] blur-3xl rounded-[32px]" />
+
+                  {/* Card Container */}
+                  <div
+                    className="relative bg-white rounded-[28px] shadow-[0_8px_40px_rgba(0,0,0,0.12)] overflow-hidden border border-[#F0F0F0] cursor-pointer"
+                    onClick={() => setShowSummary(true)}
+                  >
+                    {/* Card Header */}
+                    <div className="px-5 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-[#AAE874]/15 flex items-center justify-center">
+                          <span className="text-[14px]">🤖</span>
+                        </div>
+                        <h2 className="text-[15px] font-bold text-black">主持人分析</h2>
+                        <span className="px-2 py-0.5 bg-[#AAE874]/15 text-[11px] text-[#AAE874] font-bold rounded-full">
+                          第 {round.roundIndex} 轮
+                        </span>
+                        {/* 流式状态 */}
+                        {(round as any)._summaryStreamStatus === 'thinking' && (
+                          <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
+                            thinking
+                            <span className="inline-flex gap-0.5">
+                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                            </span>
+                          </span>
+                        )}
+                        {(round as any)._summaryStreamStatus === 'typing' && (
+                          <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
+                            typing
+                            <span className="inline-flex gap-0.5">
+                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                      {isComplete && (
+                        <button className="px-3 py-1.5 bg-[#AAE874] text-white text-[12px] font-medium rounded-full shadow-sm active:scale-95 transition-transform">
+                          查看摘要
+                        </button>
+                      )}
                     </div>
-                    <span className="text-xs font-semibold text-gray-800">主持人总结</span>
-                    {/* 流式状态 */}
-                    {(round as any)._summaryStreamStatus === 'thinking' && (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-amber-500 animate-pulse">
-                        <span className="relative flex h-1.5 w-1.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
-                        </span>
-                        thinking
-                      </span>
+
+                    {/* Consensus Meter */}
+                    {isComplete && (
+                      <div className="px-5 py-4 bg-gradient-to-br from-[#FEFEFE] to-[#FAFAFA]">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[13px] text-[#666666] font-medium">共识度</span>
+                          <span className={`text-[28px] font-bold ${cl >= 70 ? 'text-[#AAE874]' : 'text-[#F59E0B]'}`}>{cl}%</span>
+                        </div>
+                        {/* Progress Bar */}
+                        <div className="relative h-2 bg-[#F0F0F0] rounded-full overflow-hidden">
+                          <div
+                            className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${cl}%`,
+                              background: `linear-gradient(90deg, #F59E0B 0%, ${cl >= 70 ? '#AAE874' : '#FFD93D'} 100%)`
+                            }}
+                          />
+                        </div>
+                      </div>
                     )}
-                    {(round as any)._summaryStreamStatus === 'typing' && (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
-                        <span className="flex gap-0.5">
-                          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                        </span>
-                        typing
-                      </span>
+
+                    {/* Summary Section */}
+                    <div className="px-5 py-4 space-y-4">
+                      {/* thinking 状态占位 */}
+                      {(round as any)._summaryStreamStatus === 'thinking' && !round.moderatorAnalysis.summary && (
+                        <div className="flex gap-1.5 py-2 px-1">
+                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                        </div>
+                      )}
+
+                      {/* Main Summary Text */}
+                      {round.moderatorAnalysis.summary && (
+                        <div className="bg-[#F8F8F8] rounded-2xl p-4 border border-[#EEEEEE]">
+                          <p className={`text-[13px] text-[#333333] leading-relaxed ${isStreaming ? '' : 'line-clamp-5'}`}>
+                            {round.moderatorAnalysis.summary}
+                            {isStreaming && <span className="inline-block w-0.5 h-4 bg-[#AAE874] ml-0.5 animate-pulse" />}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* 情绪汇总 */}
+                      {isComplete && round.moderatorAnalysis.sentimentSummary && round.moderatorAnalysis.sentimentSummary.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {round.moderatorAnalysis.sentimentSummary.map((item, sIdx) => (
+                            <span key={sIdx} className={`inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-lg font-semibold ${
+                              item.overallSentiment === 'bullish' ? 'bg-red-50 text-red-700 border border-red-200' :
+                              item.overallSentiment === 'bearish' ? 'bg-green-50 text-green-700 border border-green-200' :
+                              item.overallSentiment === 'divided' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                              'bg-[#F8F8F8] text-[#666666] border border-[#EEEEEE]'
+                            }`}>
+                              {item.overallSentiment === 'bullish' ? '📈' :
+                               item.overallSentiment === 'bearish' ? '📉' :
+                               item.overallSentiment === 'divided' ? '⚔️' : '➖'}
+                              <span>{item.stock}</span>
+                              <span>{item.overallSentiment === 'bullish' ? '看涨' :
+                               item.overallSentiment === 'bearish' ? '看跌' :
+                               item.overallSentiment === 'divided' ? '多空分歧' : '中性'}</span>
+                              <span className="text-[10px] opacity-60 font-normal">
+                                {item.bullishAgents.length > 0 ? `涨${item.bullishAgents.length}` : ''}
+                                {item.bearishAgents.length > 0 ? ` 跌${item.bearishAgents.length}` : ''}
+                                {item.neutralAgents.length > 0 ? ` 平${item.neutralAgents.length}` : ''}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* 新发现 New Viewpoints */}
+                      {isComplete && round.moderatorAnalysis.newPoints && round.moderatorAnalysis.newPoints.length > 0 && round.moderatorAnalysis.newPoints[0] !== '暂无新观点' && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Lightbulb className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
+                            <h3 className="text-[14px] font-bold text-black">新发现</h3>
+                          </div>
+                          <ul className="space-y-1.5 pl-6">
+                            {round.moderatorAnalysis.newPoints.slice(0, 3).map((point, pIdx) => (
+                              <li key={pIdx} className="flex gap-2 text-[13px] text-[#333333] leading-relaxed">
+                                <span className="text-[#F59E0B] font-bold">✦</span>
+                                <span className="line-clamp-2">{point}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Consensus Achieved */}
+                      {isComplete && round.moderatorAnalysis.consensus && round.moderatorAnalysis.consensus.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
+                            <h3 className="text-[14px] font-bold text-black">已达成共识</h3>
+                          </div>
+                          <ul className="space-y-2 pl-6">
+                            {round.moderatorAnalysis.consensus.slice(0, 3).map((item, cIdx) => (
+                              <li key={cIdx} className="flex gap-2 text-[13px] text-[#333333] leading-relaxed">
+                                <span className="text-[#AAE874] font-bold">•</span>
+                                <span className="flex-1 line-clamp-2">{item.content}</span>
+                                <span className={`text-[10px] flex-shrink-0 px-1.5 py-0.5 rounded-full ${
+                                  item.percentage >= 75 ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
+                                  item.percentage >= 50 ? 'bg-blue-100 text-blue-700' :
+                                  'bg-[#F0F0F0] text-[#999999]'
+                                }`}>{item.percentage}%</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Still Discussing */}
+                      {isComplete && round.moderatorAnalysis.disagreements && round.moderatorAnalysis.disagreements.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
+                            <h3 className="text-[14px] font-bold text-black">仍在讨论</h3>
+                          </div>
+                          <ul className="space-y-2 pl-6">
+                            {round.moderatorAnalysis.disagreements.slice(0, 2).map((item, dIdx) => (
+                              <li key={dIdx} className="flex gap-2 text-[13px] text-[#333333] leading-relaxed">
+                                <span className="text-[#F59E0B] font-bold">•</span>
+                                <span className="line-clamp-2">{item.topic}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* View Full Analysis */}
+                    {isComplete && (
+                      <div className="px-5 py-3 border-t border-[#F0F0F0] flex items-center justify-center">
+                        <span className="text-[13px] text-[#AAE874] font-medium">查看完整分析</span>
+                        <ChevronDown className="w-4 h-4 text-[#AAE874] ml-1" />
+                      </div>
                     )}
                   </div>
-
-                  {/* 共识度进度条 — 完成后突出显示 */}
-                  {isComplete && (
-                    <div className="mb-3">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-[11px] font-medium text-gray-500">共识度</span>
-                        <span className={`text-xs font-bold ${
-                          cl >= 80 ? 'text-green-600' :
-                          cl >= 60 ? 'text-blue-600' :
-                          cl >= 40 ? 'text-yellow-600' :
-                          'text-red-500'
-                        }`}>
-                          {cl}%
-                          <span className="font-normal text-[10px] ml-1">
-                            {cl >= 80 ? '高度共识' : cl >= 60 ? '有进展' : cl >= 40 ? '有分歧' : '分歧较大'}
-                          </span>
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-500 ${
-                            cl >= 80 ? 'bg-green-500' :
-                            cl >= 60 ? 'bg-blue-500' :
-                            cl >= 40 ? 'bg-yellow-500' :
-                            'bg-red-400'
-                          }`}
-                          style={{ width: `${cl}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* thinking 状态占位 */}
-                  {(round as any)._summaryStreamStatus === 'thinking' && !round.moderatorAnalysis.summary && (
-                    <div className="flex gap-1 py-2 px-1">
-                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                    </div>
-                  )}
-
-                  {/* 总结正文 — 多显示一些 */}
-                  {round.moderatorAnalysis.summary && (
-                    <p className={`text-[13px] text-gray-700 leading-relaxed mb-2 ${isStreaming ? '' : 'line-clamp-5'}`}>
-                      {round.moderatorAnalysis.summary}
-                    </p>
-                  )}
-
-                  {/* 情绪汇总 — 完成后显示，放在共识前面更醒目 */}
-                  {isComplete && round.moderatorAnalysis.sentimentSummary && round.moderatorAnalysis.sentimentSummary.length > 0 && (
-                    <div className="mb-2.5 flex flex-wrap gap-1.5">
-                      {round.moderatorAnalysis.sentimentSummary.map((item, sIdx) => (
-                        <span key={sIdx} className={`inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-lg font-semibold ${
-                          item.overallSentiment === 'bullish' ? 'bg-red-50 text-red-700 border border-red-200' :
-                          item.overallSentiment === 'bearish' ? 'bg-green-50 text-green-700 border border-green-200' :
-                          item.overallSentiment === 'divided' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                          'bg-gray-50 text-gray-600 border border-gray-200'
-                        }`}>
-                          {item.overallSentiment === 'bullish' ? '📈' :
-                           item.overallSentiment === 'bearish' ? '📉' :
-                           item.overallSentiment === 'divided' ? '⚔️' : '➖'}
-                          <span>{item.stock}</span>
-                          <span>{item.overallSentiment === 'bullish' ? '看涨' :
-                           item.overallSentiment === 'bearish' ? '看跌' :
-                           item.overallSentiment === 'divided' ? '多空分歧' : '中性'}</span>
-                          <span className="text-[10px] opacity-60 font-normal">
-                            {item.bullishAgents.length > 0 ? `涨${item.bullishAgents.length}` : ''}
-                            {item.bearishAgents.length > 0 ? ` 跌${item.bearishAgents.length}` : ''}
-                            {item.neutralAgents.length > 0 ? ` 平${item.neutralAgents.length}` : ''}
-                          </span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 关键共识 — 完成后显示，展示更多条 */}
-                  {isComplete && round.moderatorAnalysis.consensus && round.moderatorAnalysis.consensus.length > 0 && (
-                    <div className="mb-2.5 space-y-1">
-                      <div className="text-[11px] font-medium text-gray-500 mb-0.5">关键共识</div>
-                      {round.moderatorAnalysis.consensus.slice(0, 3).map((item, cIdx) => (
-                        <div key={cIdx} className="flex items-start gap-1.5">
-                          <span className="text-green-500 text-[11px] mt-px flex-shrink-0">✓</span>
-                          <span className="text-[12px] text-gray-700 leading-relaxed flex-1 line-clamp-2">{item.content}</span>
-                          <span className={`text-[10px] flex-shrink-0 px-1.5 py-0.5 rounded-full ${
-                            item.percentage >= 75 ? 'bg-green-100 text-green-700' :
-                            item.percentage >= 50 ? 'bg-blue-100 text-blue-700' :
-                            'bg-gray-100 text-gray-500'
-                          }`}>{item.percentage}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 关键分歧 — 完成后显示 */}
-                  {isComplete && round.moderatorAnalysis.disagreements && round.moderatorAnalysis.disagreements.length > 0 && (
-                    <div className="mb-2.5 space-y-1">
-                      <div className="text-[11px] font-medium text-gray-500 mb-0.5">关键分歧</div>
-                      {round.moderatorAnalysis.disagreements.slice(0, 2).map((item, dIdx) => (
-                        <div key={dIdx} className="flex items-start gap-1.5">
-                          <span className="text-amber-500 text-[11px] mt-px flex-shrink-0">⚡</span>
-                          <span className="text-[12px] text-gray-700 leading-relaxed line-clamp-2">{item.topic}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* 查看完整分析按钮 */}
-                  {isComplete && (
-                    <div className="flex items-center justify-center gap-1 text-xs text-indigo-500 pt-1 border-t border-gray-100">
-                      <span>查看完整分析</span>
-                      <ChevronDown className="w-3 h-3" />
-                    </div>
-                  )}
                 </div>
               </div>
                 );
@@ -1284,132 +1410,127 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         </div>
       </div>
 
-      {/* "回到底部"按钮 - 悬浮在底部栏上方 */}
+      {/* Back to Bottom Button */}
       {showScrollToBottom && (
-        <div 
-          className="fixed bottom-16 left-1/2 pointer-events-auto"
-          style={{
-            transform: 'translateX(-50%)',
-            zIndex: 9999,
-          }}
+        <button
+          onClick={scrollToBottom}
+          className="absolute right-5 bottom-28 z-[9999] w-12 h-12 rounded-full bg-[#AAE874] shadow-[0_4px_20px_rgba(170,232,116,0.4)] flex items-center justify-center active:scale-95 transition-all hover:shadow-[0_6px_24px_rgba(170,232,116,0.5)]"
         >
+          <ArrowDown className="w-5 h-5 text-white" strokeWidth={2.5} />
+        </button>
+      )}
+
+      {/* Bottom Action Bar - Figma 风格 */}
+      <div className="absolute bottom-0 left-0 right-0 px-5 pb-6 pt-4 z-50">
+        {/* Glassmorphic Background */}
+        <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
+
+        <div className="relative flex items-center gap-3">
+          {/* Prompts Button */}
           <button
-            onClick={scrollToBottom}
-            className="px-3 py-1.5 bg-black/60 text-white rounded-full flex items-center justify-center gap-1.5 text-xs shadow-lg hover:bg-black/70 transition-all duration-300 backdrop-blur-sm"
+            onClick={() => {
+              const currentRound = rounds[rounds.length - 1];
+              if (currentRound?.prompts) {
+                setCurrentRoundPrompts(currentRound.prompts);
+                setShowPromptsModal(true);
+              } else {
+                alert('当前轮次暂无prompts数据');
+              }
+            }}
+            className="flex-shrink-0 w-10 h-10 rounded-full border border-[#E8E8E8] bg-white flex items-center justify-center active:scale-95 transition-transform"
+            title="查看 Prompts"
           >
-            <ArrowDown className="w-3.5 h-3.5" />
-            <span>回到底部</span>
+            <FileText className="w-4 h-4 text-[#666666]" />
+          </button>
+
+          {/* Status Text / Input */}
+          <div className="flex-1 relative">
+            <div className="w-full px-5 py-3 bg-white border border-[#E8E8E8] rounded-full text-[14px] text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] select-none">
+              {isLoading ? '专家们正在讨论中...' : '点击发送继续下一轮讨论'}
+            </div>
+          </div>
+
+          {/* Send / Continue Button */}
+          <button
+            onClick={handleContinueDiscussion}
+            disabled={isLoading}
+            className={`
+              flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all
+              ${isLoading
+                ? 'bg-[#E8E8E8] cursor-not-allowed opacity-50'
+                : 'bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]'
+              }
+            `}
+          >
+            {isLoading ? (
+              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <SendHorizontal className="w-5 h-5 text-white" strokeWidth={2.5} />
+            )}
           </button>
         </div>
-      )}
-      
-      {/* CSS for fade-in animation */}
-      <style jsx global>{`
-        @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateX(-50%) translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(-50%) translateY(0);
-          }
-        }
-      `}</style>
-
-      {/* Bottom Actions - 轻盈发送风格 */}
-      <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-3 py-2.5 flex items-center gap-2 z-30">
-        <button 
-          onClick={() => {
-            const currentRound = rounds[rounds.length - 1];
-            if (currentRound?.prompts) {
-              setCurrentRoundPrompts(currentRound.prompts);
-              setShowPromptsModal(true);
-            } else {
-              alert('当前轮次暂无prompts数据');
-            }
-          }}
-          className="p-2.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
-          title="查看 Prompts"
-        >
-          <FileText className="w-5 h-5" />
-        </button>
-        <div className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm text-gray-400 select-none">
-          {isLoading ? '专家们正在讨论中...' : '点击右侧按钮继续下一轮讨论'}
-        </div>
-        <button 
-          onClick={handleContinueDiscussion}
-          disabled={isLoading}
-          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-            isLoading 
-              ? 'bg-gray-200 text-gray-400 cursor-not-allowed animate-pulse' 
-              : 'bg-indigo-500 text-white hover:bg-indigo-600 shadow-md active:scale-95'
-          }`}
-        >
-          <Send className="w-5 h-5" />
-        </button>
       </div>
 
       {/* Prompts Modal */}
       {showPromptsModal && currentRoundPrompts && (
-        <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-[10001]" onClick={() => setShowPromptsModal(false)}>
-          <div className="w-full max-w-4xl max-h-[90vh] bg-white rounded-2xl overflow-hidden flex flex-col mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-gray-900">Prompts - 第 {rounds.length} 轮</h2>
+        <div className="absolute inset-0 bg-black/30 flex items-center justify-center z-[10001]" onClick={() => setShowPromptsModal(false)}>
+          <div className="w-full max-w-4xl max-h-[90vh] bg-white rounded-[28px] overflow-hidden flex flex-col mx-4 shadow-[0_8px_40px_rgba(0,0,0,0.12)]" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
+              <h2 className="text-[18px] font-bold text-black">Prompts - 第 {rounds.length} 轮</h2>
               <button
                 onClick={() => setShowPromptsModal(false)}
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                className="w-9 h-9 rounded-full bg-[#F8F8F8] flex items-center justify-center active:scale-95 transition-transform"
               >
-                <X className="w-5 h-5 text-gray-500" />
+                <X className="w-5 h-5 text-[#666666]" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4">
               {/* Agent Prompts */}
               <div className="mb-6">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Agent Prompts</h3>
+                <h3 className="text-[16px] font-bold text-black mb-4">Agent Prompts</h3>
                 {currentRoundPrompts.agents.map((agentPrompt, index) => (
-                  <div key={index} className="mb-6 p-4 bg-gray-50 rounded-xl">
+                  <div key={index} className="mb-6 p-4 bg-[#F8F8F8] rounded-2xl border border-[#EEEEEE]">
                     <div className="flex items-center gap-2 mb-3">
-                      <div className={`w-3 h-3 ${discussion.agents.find(a => a.id === agentPrompt.agentId)?.color || 'bg-gray-500'} rounded-full`} />
-                      <h4 className="text-base font-medium text-gray-900">{agentPrompt.agentName}</h4>
+                      <AgentAvatar type={getAvatarTypeById(agentPrompt.agentId, discussion.agents)} size={24} />
+                      <h4 className="text-[14px] font-bold text-black">{agentPrompt.agentName}</h4>
                     </div>
                     <div className="space-y-3">
                       <div>
-                        <div className="text-xs font-medium text-gray-600 mb-1">System Prompt:</div>
-                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{agentPrompt.systemPrompt}</pre>
+                        <div className="text-[12px] font-medium text-[#666666] mb-1">System Prompt:</div>
+                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{agentPrompt.systemPrompt}</pre>
                       </div>
                       <div>
-                        <div className="text-xs font-medium text-gray-600 mb-1">User Prompt:</div>
-                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{agentPrompt.userPrompt}</pre>
+                        <div className="text-[12px] font-medium text-[#666666] mb-1">User Prompt:</div>
+                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{agentPrompt.userPrompt}</pre>
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
-              
+
               {/* Moderator Prompts */}
               {currentRoundPrompts.moderator && (
                 <div>
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">Moderator Prompts</h3>
-                  <div className="p-4 bg-purple-50 rounded-xl">
+                  <h3 className="text-[16px] font-bold text-black mb-4">Moderator Prompts</h3>
+                  <div className="p-4 bg-[#AAE874]/10 rounded-2xl border border-[#AAE874]/20">
                     <div className="space-y-3">
                       <div>
-                        <div className="text-xs font-medium text-gray-600 mb-1">System Prompt:</div>
-                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.systemPrompt}</pre>
+                        <div className="text-[12px] font-medium text-[#666666] mb-1">System Prompt:</div>
+                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.systemPrompt}</pre>
                       </div>
                       <div>
-                        <div className="text-xs font-medium text-gray-600 mb-1">User Prompt:</div>
-                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.userPrompt}</pre>
+                        <div className="text-[12px] font-medium text-[#666666] mb-1">User Prompt:</div>
+                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.userPrompt}</pre>
                       </div>
                     </div>
                   </div>
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-gray-200">
+            <div className="px-6 py-4 border-t border-[#F0F0F0]">
               <button
                 onClick={() => setShowPromptsModal(false)}
-                className="w-full py-3 bg-indigo-500 text-white rounded-full text-sm font-medium hover:bg-indigo-600 transition-colors"
+                className="w-full py-3 bg-[#AAE874] text-white rounded-full text-[14px] font-medium active:scale-[0.98] transition-transform shadow-[0_4px_16px_rgba(170,232,116,0.4)]"
               >
                 关闭
               </button>
@@ -1418,112 +1539,76 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         </div>
       )}
 
-      {/* Summary Modal */}
+      {/* Summary Modal - Figma 风格 */}
       {showSummary && (
-        <div className="absolute inset-0 bg-black/50 flex items-end" style={{ zIndex: 10000 }}>
-          <div className="w-full bg-white rounded-t-3xl max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-4 pt-3 pb-2 flex items-center justify-center border-b border-gray-200">
-              <div className="w-12 h-1 bg-gray-300 rounded-full"></div>
+        <div className="absolute inset-0 bg-black/30 flex items-end z-[10000]">
+          <div className="w-full bg-white rounded-t-[32px] max-h-[90vh] overflow-hidden flex flex-col shadow-[0_-8px_40px_rgba(0,0,0,0.12)]">
+            <div className="px-5 pt-4 pb-3 flex items-center justify-center relative border-b border-[#F0F0F0]">
+              <div className="w-12 h-1.5 bg-[#E0E0E0] rounded-full"></div>
               <button
                 onClick={() => setShowSummary(false)}
-                className="absolute right-4 top-3 w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center"
+                className="absolute right-5 top-3 w-9 h-9 bg-[#F8F8F8] rounded-full flex items-center justify-center active:scale-95 transition-transform"
               >
-                <X className="w-5 h-5 text-gray-600" />
+                <X className="w-5 h-5 text-[#666666]" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              <div className="p-4">
-                <h2 className="text-xl text-gray-900 mb-1">Master Document</h2>
-                
-                {/* Tabs */}
-                <div className="flex gap-6 mb-6 border-b border-gray-200">
-                  <button className="pb-3 text-sm text-indigo-600 border-b-2 border-indigo-600">
-                    总结
-                  </button>
-                  <button className="pb-3 text-sm text-gray-500">
-                    模型
-                  </button>
-                  <button className="pb-3 text-sm text-gray-500">
-                    历史
-                  </button>
-                </div>
+              <div className="p-5">
+                <h2 className="text-[22px] font-bold text-black mb-2">分析报告</h2>
 
                 {/* Version Badge */}
-                <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-500 rounded-full mb-4">
-                  <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clipRule="evenodd" />
-                  </svg>
-                  <span className="text-white text-sm">讨论中</span>
-                  <span className="px-2 py-0.5 bg-white/20 text-white text-xs rounded">v{rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round}</span>
+                <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#AAE874] rounded-full mb-4">
+                  <span className="text-white text-[13px] font-medium">讨论中</span>
+                  <span className="px-2 py-0.5 bg-white/20 text-white text-[11px] rounded">第{rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round}轮</span>
                 </div>
 
                 {/* Title */}
-                <h3 className="text-2xl text-gray-900 mb-4">{discussion.title}</h3>
+                <h3 className="text-[20px] font-bold text-black mb-4">{discussion.title}</h3>
 
-                {/* Summary Paragraph - 显示最新一轮的数据 */}
+                {/* Summary Content */}
                 {(() => {
                   const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
                   const analysis = latestRound?.moderatorAnalysis || discussion.moderatorAnalysis;
-                  
+
                   return (
                     <>
-                      <div className="bg-indigo-50 rounded-2xl p-4 mb-4">
-                        <p className="text-sm text-gray-700 leading-relaxed mb-3">
+                      <div className="bg-[#F8F8F8] rounded-2xl p-4 mb-4 border border-[#EEEEEE]">
+                        <p className="text-[14px] text-[#333333] leading-relaxed mb-3">
                           {analysis.summary}
                         </p>
-                        <div className="p-3 bg-white rounded-lg">
-                          <div className="flex items-start gap-2 mb-2">
-                            <span className="text-indigo-500 text-sm">💬</span>
-                            <h4 className="text-sm text-gray-900 flex-1">综论</h4>
-                          </div>
-                          <p className="text-sm text-gray-700 leading-relaxed">
-                            {analysis.summary}
-                          </p>
-                        </div>
                         <div className="flex items-center gap-2 mt-3">
                           <div className="flex -space-x-2">
                             {discussion.agents.map((agent, i) => (
-                              <div
-                                key={i}
-                                className={`w-6 h-6 ${agent.color} rounded-full border-2 border-white flex items-center justify-center text-xs text-white`}
-                              >
-                                {agent.icon}
+                              <div key={i} className="w-6 h-6 rounded-full border-2 border-white overflow-hidden">
+                                <AgentAvatar type={getAvatarType(agent)} size={24} />
                               </div>
                             ))}
                           </div>
-                          <span className="text-xs text-gray-500">参与者</span>
+                          <span className="text-[12px] text-[#999999]">参与者</span>
                           <div className="flex-1"></div>
-                          <span className="text-green-600 text-sm">✓</span>
-                          <span className="text-xs text-gray-500">{analysis.consensus.length}</span>
-                          <span className="text-red-600 text-sm">⤺</span>
-                          <span className="text-xs text-gray-500">{analysis.disagreements.length}</span>
+                          <Check className="w-4 h-4 text-[#AAE874]" />
+                          <span className="text-[12px] text-[#666666]">{analysis.consensus.length}</span>
+                          <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
+                          <span className="text-[12px] text-[#666666]">{analysis.disagreements.length}</span>
                         </div>
                       </div>
 
                       {/* Consensus */}
                       <div className="mb-6">
                         <div className="flex items-center gap-2 mb-3">
-                          <span className="text-green-600">✓</span>
-                          <h4 className="text-base text-gray-900">关键共识</h4>
+                          <Check className="w-5 h-5 text-[#AAE874]" strokeWidth={2.5} />
+                          <h4 className="text-[16px] font-bold text-black">关键共识</h4>
                         </div>
                         {analysis.consensus.map((item, index) => (
-                          <div key={index} className="flex items-start gap-3 mb-3 p-3 bg-green-50 rounded-xl">
-                            <span className="text-green-600 text-lg mt-0.5">{index + 1}</span>
+                          <div key={index} className="flex items-start gap-3 mb-3 p-4 bg-[#AAE874]/5 rounded-2xl border border-[#AAE874]/20">
+                            <span className="text-[#AAE874] text-[16px] font-bold mt-0.5">{index + 1}</span>
                             <div className="flex-1">
-                              <p className="text-sm text-gray-900 mb-2">{item.content}</p>
+                              <p className="text-[14px] text-[#333333] mb-2">{item.content}</p>
                               <div className="flex items-center gap-2">
-                                <div className="flex -space-x-2">
-                                  {discussion.agents.slice(0, 3).map((agent, i) => (
-                                    <div
-                                      key={i}
-                                      className={`w-5 h-5 ${agent.color} rounded-full border-2 border-white`}
-                                    />
-                                  ))}
-                                </div>
-                                <span className="text-xs text-gray-600">{item.agents.join(' · ')}</span>
+                                <span className="text-[12px] text-[#666666]">{item.agents.join(' · ')}</span>
                                 <div className="flex-1"></div>
-                                <span className="text-sm text-green-600">{item.percentage}%</span>
+                                <span className="text-[14px] text-[#AAE874] font-bold">{item.percentage}%</span>
                               </div>
                             </div>
                           </div>
@@ -1532,27 +1617,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
                       {/* Disagreements */}
                       <div className="mb-6">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-red-600">⤺</span>
-                            <h4 className="text-base text-gray-900">分歧焦点</h4>
-                          </div>
-                          <span className="text-xs text-gray-500">部分无法决议</span>
+                        <div className="flex items-center gap-2 mb-3">
+                          <AlertCircle className="w-5 h-5 text-[#F59E0B]" />
+                          <h4 className="text-[16px] font-bold text-black">分歧焦点</h4>
                         </div>
                         {analysis.disagreements.map((item, index) => (
-                          <div key={index} className="mb-3 p-4 bg-gray-50 rounded-xl">
-                            <h5 className="text-sm text-gray-900 mb-2">{item.topic}</h5>
-                            <p className="text-xs text-gray-600 mb-3">{item.description}</p>
-                            <div className="grid grid-cols-2 gap-2">
-                              {item.supportAgents.slice(0, 2).map((agent, i) => (
-                                <div key={i} className="p-2 bg-white rounded-lg">
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <div className={`w-4 h-4 ${agent.color} rounded-full`} />
-                                    <span className="text-xs text-gray-600 truncate">{agent.name}</span>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                          <div key={index} className="mb-3 p-4 bg-[#FAFAFA] rounded-2xl border border-[#EEEEEE]">
+                            <h5 className="text-[14px] font-bold text-black mb-2">{item.topic}</h5>
+                            <p className="text-[12px] text-[#666666] mb-3">{item.description}</p>
                           </div>
                         ))}
                       </div>
@@ -1562,27 +1634,22 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                         <div>
                           <div className="flex items-center gap-2 mb-3">
                             <span>📊</span>
-                            <h4 className="text-base text-gray-900">标的情绪</h4>
+                            <h4 className="text-[16px] font-bold text-black">标的情绪</h4>
                           </div>
                           {analysis.sentimentSummary.map((item, index) => (
-                            <div key={index} className="mb-3 p-4 bg-gray-50 rounded-xl">
+                            <div key={index} className="mb-3 p-4 bg-[#FAFAFA] rounded-2xl border border-[#EEEEEE]">
                               <div className="flex items-center gap-2 mb-3">
-                                <span className={`text-lg ${
-                                  item.overallSentiment === 'bullish' ? 'text-red-500' :
-                                  item.overallSentiment === 'bearish' ? 'text-green-500' :
-                                  item.overallSentiment === 'divided' ? 'text-amber-500' :
-                                  'text-gray-400'
-                                }`}>
+                                <span className="text-[16px]">
                                   {item.overallSentiment === 'bullish' ? '📈' :
                                    item.overallSentiment === 'bearish' ? '📉' :
                                    item.overallSentiment === 'divided' ? '⚔️' : '➖'}
                                 </span>
-                                <h5 className="text-sm font-medium text-gray-900">{item.stock}</h5>
-                                <span className={`text-xs px-2 py-0.5 rounded-full ${
+                                <h5 className="text-[14px] font-bold text-black">{item.stock}</h5>
+                                <span className={`text-[12px] px-2 py-0.5 rounded-full font-medium ${
                                   item.overallSentiment === 'bullish' ? 'bg-red-100 text-red-700' :
                                   item.overallSentiment === 'bearish' ? 'bg-green-100 text-green-700' :
                                   item.overallSentiment === 'divided' ? 'bg-amber-100 text-amber-700' :
-                                  'bg-gray-100 text-gray-600'
+                                  'bg-[#F0F0F0] text-[#666666]'
                                 }`}>
                                   {item.overallSentiment === 'bullish' ? '整体看涨' :
                                    item.overallSentiment === 'bearish' ? '整体看跌' :
@@ -1595,9 +1662,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                     <span className="text-[11px] text-red-500 w-8">看涨</span>
                                     <div className="flex-1 flex flex-wrap gap-1">
                                       {item.bullishAgents.map((name, i) => (
-                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-red-50 text-red-600 rounded">
-                                          {name}
-                                        </span>
+                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-red-50 text-red-600 rounded-full">{name}</span>
                                       ))}
                                     </div>
                                   </div>
@@ -1607,45 +1672,32 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                     <span className="text-[11px] text-green-500 w-8">看跌</span>
                                     <div className="flex-1 flex flex-wrap gap-1">
                                       {item.bearishAgents.map((name, i) => (
-                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-green-50 text-green-600 rounded">
-                                          {name}
-                                        </span>
+                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-green-50 text-green-600 rounded-full">{name}</span>
                                       ))}
                                     </div>
                                   </div>
                                 )}
                                 {item.neutralAgents.length > 0 && (
                                   <div className="flex items-center gap-2">
-                                    <span className="text-[11px] text-gray-400 w-8">中性</span>
+                                    <span className="text-[11px] text-[#999999] w-8">中性</span>
                                     <div className="flex-1 flex flex-wrap gap-1">
                                       {item.neutralAgents.map((name, i) => (
-                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-gray-50 text-gray-500 rounded">
-                                          {name}
-                                        </span>
+                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-[#F0F0F0] text-[#666666] rounded-full">{name}</span>
                                       ))}
                                     </div>
                                   </div>
                                 )}
                               </div>
-                              {/* 情绪条 */}
-                              <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden flex">
+                              {/* Sentiment Bar */}
+                              <div className="mt-2 h-2 bg-[#F0F0F0] rounded-full overflow-hidden flex">
                                 {item.bullishAgents.length > 0 && (
-                                  <div
-                                    className="bg-red-400 h-full"
-                                    style={{ width: `${(item.bullishAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }}
-                                  />
+                                  <div className="bg-red-400 h-full" style={{ width: `${(item.bullishAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }} />
                                 )}
                                 {item.neutralAgents.length > 0 && (
-                                  <div
-                                    className="bg-gray-400 h-full"
-                                    style={{ width: `${(item.neutralAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }}
-                                  />
+                                  <div className="bg-[#CCCCCC] h-full" style={{ width: `${(item.neutralAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }} />
                                 )}
                                 {item.bearishAgents.length > 0 && (
-                                  <div
-                                    className="bg-green-400 h-full"
-                                    style={{ width: `${(item.bearishAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }}
-                                  />
+                                  <div className="bg-green-400 h-full" style={{ width: `${(item.bearishAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }} />
                                 )}
                               </div>
                             </div>
@@ -1658,10 +1710,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             </div>
 
-            <div className="p-4 border-t border-gray-200">
+            <div className="p-5 border-t border-[#F0F0F0]">
               <button
                 onClick={() => setShowSummary(false)}
-                className="w-full py-3 bg-indigo-500 text-white rounded-full text-sm"
+                className="w-full py-3.5 bg-[#AAE874] text-white rounded-full text-[14px] font-medium active:scale-[0.98] transition-transform shadow-[0_4px_16px_rgba(170,232,116,0.4)]"
               >
                 关闭
               </button>

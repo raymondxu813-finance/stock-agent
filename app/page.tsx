@@ -20,14 +20,16 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center">
-      {/* Mobile viewport container */}
-      <div className="w-full max-w-[375px] h-screen bg-[#0a0a0a] shadow-2xl overflow-hidden relative">
+    <div className="min-h-screen min-h-[100dvh] flex items-center justify-center bg-[#F5F5F5]">
+      {/* H5 容器：移动端全屏，桌面端以 390×844 居中展示 */}
+      <div className="w-full max-w-[390px] h-[100dvh] max-h-[844px] bg-white overflow-hidden relative
+        sm:rounded-[32px] sm:border sm:border-[#E8E8E8]
+        max-sm:max-h-none max-sm:rounded-none max-sm:border-none">
         {currentPage === 'welcome' && (
           <WelcomePage onCreateDiscussion={handleCreateDiscussion} />
         )}
         {currentPage === 'discussion' && discussion && (
-          <DiscussionPage 
+          <DiscussionPage
             discussion={discussion}
             onBack={handleBackToHome}
             onUpdateDiscussion={setDiscussion}

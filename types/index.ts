@@ -1,3 +1,5 @@
+export type AvatarType = 'sphere' | 'safe' | 'crystal' | 'rocket' | 'lightning' | 'rings';
+
 export type Agent = {
   id: string;
   name: string;
@@ -5,6 +7,8 @@ export type Agent = {
   color: string;
   icon: string;
   selected: boolean;
+  avatarType?: AvatarType;
+  auraColor?: string;
 };
 
 export type StockSentiment = {
