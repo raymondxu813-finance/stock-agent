@@ -11,11 +11,11 @@ import { llmClient } from '@/lib/llmClient';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, sessionData } = body;
+    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData } = body;
 
-    if (!sessionId || !roundIndex || !agentsSpeeches || agentsReviews === undefined) {
+    if (!sessionId || !roundIndex) {
       return new Response(
-        JSON.stringify({ error: 'Missing required fields: sessionId, roundIndex, agentsSpeeches, agentsReviews' }),
+        JSON.stringify({ error: 'Missing required fields: sessionId, roundIndex' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -42,24 +42,50 @@ export async function POST(request: NextRequest) {
       return textStr.substring(0, maxLength) + '\n\n[内容已截断]';
     };
 
-    const currentRoundAgentsSpeeches = agentsSpeeches
-      .map((s: any) => {
-        const speechText = s.speech || '';
-        const truncatedSpeech = truncateText(speechText, 500);
-        return `【${s.agentName}（${s.agentId}）】\n${truncatedSpeech}`;
-      })
-      .join('\n\n');
+    // 处理观点阐述
+    const currentRoundAgentsSpeeches = agentsSpeeches && Array.isArray(agentsSpeeches) && agentsSpeeches.length > 0
+      ? agentsSpeeches
+          .map((s: any) => {
+            const speechText = s.speech || s.content || '';
+            const truncatedSpeech = truncateText(speechText, 500);
+            return `【${s.agentName}（${s.agentId}）的观点阐述】\n${truncatedSpeech}`;
+          })
+          .join('\n\n')
+      : '';
 
-    // 处理互评：如果为空数组（第一轮），则使用空字符串
-    const currentRoundAgentsReviews = agentsReviews && agentsReviews.length > 0
+    // 处理互评（旧逻辑兼容）
+    const currentRoundAgentsReviews = agentsReviews && Array.isArray(agentsReviews) && agentsReviews.length > 0
       ? agentsReviews
           .map((r: any) => {
-            const reviewText = r.review || '';
+            const reviewText = r.review || r.content || '';
             const truncatedReview = truncateText(reviewText, 400);
             return `【${r.agentName}（${r.agentId}）的互评】\n${truncatedReview}`;
           })
           .join('\n\n')
-      : '本轮暂无互评内容。'; // 第一轮没有互评
+      : '';
+
+    // 处理针对性回复（新逻辑）
+    const currentRoundAgentsRepliesText = agentsReplies && Array.isArray(agentsReplies) && agentsReplies.length > 0
+      ? agentsReplies
+          .map((r: any) => {
+            const replyText = r.reply || r.content || '';
+            const truncatedReply = truncateText(replyText, 400);
+            const replyLabel = r.replyRound ? `第${r.replyRound}次回复` : '针对性回复';
+            return `【${r.agentName}（${r.agentId}）的${replyLabel}】\n${truncatedReply}`;
+          })
+          .join('\n\n')
+      : '';
+
+    // 合并所有讨论内容
+    const allDiscussionContent = [
+      currentRoundAgentsSpeeches,
+      currentRoundAgentsReviews,
+      currentRoundAgentsRepliesText,
+    ].filter(Boolean).join('\n\n---\n\n');
+
+    // 如果完全没有内容，使用默认文本
+    const finalAgentsSpeeches = allDiscussionContent || '本轮暂无发言内容。';
+    const finalAgentsReviews = currentRoundAgentsRepliesText || currentRoundAgentsReviews || '本轮暂无互评/回复内容。';
 
     // 生成总结
     const agentsBriefList = buildAgentsBriefList(session.agents);
@@ -70,8 +96,8 @@ export async function POST(request: NextRequest) {
       topic_description: session.topicDescription,
       user_goal: session.userGoal,
       agents_brief_list: agentsBriefList,
-      current_round_agents_speeches: currentRoundAgentsSpeeches,
-      current_round_agents_reviews: currentRoundAgentsReviews,
+      current_round_agents_speeches: finalAgentsSpeeches,
+      current_round_agents_reviews: finalAgentsReviews,
     });
     
     // 保存主持人prompts到session（用于持久化）

@@ -409,16 +409,16 @@ class MockLLMClient implements LLMClient {
       // 如果没有提取到，使用默认值
       if (agents.length === 0) {
         agents = [
-          { agentName: '宏观经济学家', agentId: 'macro_economist' },
-          { agentName: '金融领域专家', agentId: 'finance_expert' },
-          { agentName: '资深股票从业人员', agentId: 'senior_stock_practitioner' },
+          { agentName: '涨停敢死队长', agentId: 'macro_economist' },
+          { agentName: '价值投资苦行僧', agentId: 'finance_expert' },
+          { agentName: '量化狙击手', agentId: 'senior_stock_practitioner' },
         ];
       }
       
       return JSON.stringify({
         roundIndex,
         topicTitle,
-        overallSummary: `本轮讨论中，各 Agent 从不同角度分析了"${topicTitle}"这个话题，提出了各自的见解和建议。宏观经济学家从经济周期和政策环境角度进行了分析，金融领域专家从风险管理和资产配置角度给出了建议，资深股票从业人员从市场实战角度提供了操作层面的思考。`,
+        overallSummary: `本轮讨论中，各 Agent 从不同角度分析了"${topicTitle}"这个话题，提出了各自的见解和建议。涨停敢死队长从短线盘面和资金流向角度进行了分析，价值投资苦行僧从企业内在价值和护城河角度给出了建议，量化狙击手从数据和模型角度提供了量化分析。`,
         agentsSummary: agents.map(a => ({
           agentId: a.agentId,
           agentName: a.agentName,

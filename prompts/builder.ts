@@ -7,7 +7,7 @@
 
 import type { AgentId } from './roundAgentPrompts';
 import { agentSpeechPromptById, agentReviewPromptById } from './roundAgentPrompts';
-import { agentSubsequentRoundSpeechPromptById } from './subsequentRoundAgentPrompts';
+import { agentSubsequentRoundSpeechPromptById, targetedReplyUserPromptTemplate, subsequentRoundReplyUserPromptTemplate } from './subsequentRoundAgentPrompts';
 import { roundSummaryUserPromptTemplate } from './roundSummaryPrompts';
 import { sessionSummaryUserPromptTemplate } from './sessionSummaryPrompts';
 import { agentDisagreementAnalysisUserPromptTemplate } from './agentDisagreementPrompts';
@@ -112,6 +112,60 @@ export function buildAgentSubsequentRoundSpeechUserPrompt(
     });
   }
   return fillTemplate(template, vars as unknown as Record<string, string | number>);
+}
+
+/**
+ * Agent 针对性回复 User Prompt 构建函数参数类型
+ */
+export interface AgentTargetedReplyPromptVars {
+  /** 讨论话题 */
+  topic: string;
+  /** 当前轮次索引 */
+  round_index: number;
+  /** 第几次回复（1, 2, 3） */
+  reply_round: number;
+  /** 所有Agent的发言/回复内容（上下文） */
+  all_agents_speeches: string;
+  /** 自己的发言内容 */
+  my_speech: string;
+  /** 前几次回复的内容（用于第2/3次回复时参考），为空字符串则表示第1次 */
+  previous_replies: string;
+  /** 上一轮所有Agent的发言内容（第二轮+使用） */
+  previous_round_speeches?: string;
+  /** 自己在上一轮的发言（第二轮+使用） */
+  my_previous_speech?: string;
+}
+
+/**
+ * 构建 Agent 针对性回复 User Prompt
+ * 根据 round_index 自动选择第一轮或后续轮次的模板
+ * 
+ * @param vars 变量对象
+ * @returns 填充后的 User Prompt 字符串
+ */
+export function buildAgentTargetedReplyUserPrompt(
+  vars: AgentTargetedReplyPromptVars
+): string {
+  if (vars.round_index === 1) {
+    // 第一轮：基于本轮观点阐述进行回复
+    return fillTemplate(targetedReplyUserPromptTemplate, {
+      topic: vars.topic,
+      all_agents_speeches: vars.all_agents_speeches,
+      my_speech: vars.my_speech,
+      reply_round: vars.reply_round,
+      previous_replies: vars.previous_replies ? `【前几次回复参考】\n${vars.previous_replies}` : '',
+    });
+  } else {
+    // 第二轮+：基于上一轮回复内容进行回复
+    return fillTemplate(subsequentRoundReplyUserPromptTemplate, {
+      topic: vars.topic,
+      round_index: vars.round_index,
+      reply_round: vars.reply_round,
+      previous_round_speeches: vars.previous_round_speeches || vars.all_agents_speeches,
+      my_previous_speech: vars.my_previous_speech || vars.my_speech,
+      previous_replies: vars.previous_replies ? `【本轮前几次回复参考】\n${vars.previous_replies}` : '',
+    });
+  }
 }
 
 /**

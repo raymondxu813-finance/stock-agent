@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Menu, Edit3, ChevronDown, ArrowDown, X, FileText, Send } from 'lucide-react';
-import type { Discussion, AgentComment, RoundData } from '@/types';
+import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent } from '@/types';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
 
 // 气泡背景色映射：根据agent的color类名返回对应的淡色背景
@@ -14,7 +14,59 @@ const getBubbleBgColor = (agentColor: string): string => {
   if (agentColor.includes('purple')) return 'bg-purple-50';
   if (agentColor.includes('red')) return 'bg-red-50';
   if (agentColor.includes('indigo')) return 'bg-indigo-50';
+  if (agentColor.includes('amber')) return 'bg-amber-50';
   return 'bg-gray-50';
+};
+
+// @提及高亮：获取 agent color 对应的文字颜色
+const getMentionTextColor = (agentColor: string): string => {
+  if (agentColor.includes('red')) return 'text-red-600';
+  if (agentColor.includes('emerald')) return 'text-emerald-600';
+  if (agentColor.includes('indigo')) return 'text-indigo-600';
+  if (agentColor.includes('amber')) return 'text-amber-600';
+  if (agentColor.includes('blue')) return 'text-blue-600';
+  if (agentColor.includes('purple')) return 'text-purple-600';
+  if (agentColor.includes('orange')) return 'text-orange-600';
+  return 'text-indigo-600';
+};
+
+/**
+ * 渲染内容中的 @agent名称 为加粗+变色
+ * 匹配所有 @AgentName 模式，如果名称匹配已知 agent 则高亮
+ */
+const renderContentWithMentions = (content: string, agents: Agent[]): React.ReactNode => {
+  if (!content || agents.length === 0) return content;
+
+  // 构建 agent 名称列表（按长度降序，优先匹配长名称）
+  const agentNames = agents
+    .map(a => a.name)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  if (agentNames.length === 0) return content;
+
+  // 构建正则：匹配 @AgentName（贪婪匹配已知名称）
+  const escapedNames = agentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const mentionRegex = new RegExp(`(@(?:${escapedNames.join('|')}))`, 'g');
+
+  const parts = content.split(mentionRegex);
+  if (parts.length === 1) return content; // 没有匹配到任何 @mention
+
+  return parts.map((part, idx) => {
+    if (part.startsWith('@')) {
+      const mentionedName = part.slice(1);
+      const matchedAgent = agents.find(a => a.name === mentionedName);
+      if (matchedAgent) {
+        const colorClass = getMentionTextColor(matchedAgent.color || '');
+        return (
+          <span key={idx} className={`font-semibold ${colorClass}`}>
+            {part}
+          </span>
+        );
+      }
+    }
+    return part;
+  });
 };
 
 // localStorage key
@@ -71,6 +123,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const [currentRoundComments, setCurrentRoundComments] = useState<Map<string, AgentComment>>(new Map());
   const [currentRoundStatus, setCurrentRoundStatus] = useState<'idle' | 'speech' | 'review' | 'summary' | 'complete'>('idle');
   const [currentSummaryText, setCurrentSummaryText] = useState<string>(''); // 用于流式显示总结
+  const [summaryStreamStatus, setSummaryStreamStatus] = useState<'thinking' | 'typing' | null>(null); // 主持人总结的流式状态
   const [isDrawerOpen, setIsDrawerOpen] = useState(false); // 历史话题抽屉状态
   const [showScrollToBottom, setShowScrollToBottom] = useState(false); // 是否显示"回到底部"按钮
   const [showPromptsModal, setShowPromptsModal] = useState(false); // 是否显示prompts弹窗
@@ -100,6 +153,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       if (!currentRoundExists) {
         // 如果不存在，添加当前进行中的轮次
         const currentRoundCommentsArray = Array.from(currentRoundComments.values());
+        
+        // 主持人总结：仅在 summary 阶段才显示（不在 speech/review 阶段显示）
+        const showModerator = currentRoundStatus === 'summary';
+        
         return [
           ...completedRounds,
           {
@@ -108,14 +165,18 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             moderatorAnalysis: {
               round: currentRoundIndex,
               consensusLevel: 0,
-              summary: currentRoundStatus === 'summary' 
-                ? (currentSummaryText || '正在生成总结...')
-                : '讨论进行中...',
+              summary: showModerator
+                ? (currentSummaryText || '')
+                : '',
               newPoints: [],
               consensus: [],
               disagreements: [],
             },
-          },
+            // 标记是否正在进行中（用于UI判断是否渲染主持人区块）
+            _isInProgress: true,
+            _showModerator: showModerator,
+            _summaryStreamStatus: summaryStreamStatus,
+          } as any, // 临时扩展字段
         ];
       }
       // 如果已存在，直接返回已完成轮次（避免重复）
@@ -217,7 +278,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
       }, 100);
     }
-  }, [rounds.length, currentRoundComments.size, userScrolledUp]);
+  }, [rounds.length, currentRoundComments.size, userScrolledUp, summaryStreamStatus, currentSummaryText]);
 
   // 自动开始第一轮讨论（如果还没有开始）
   useEffect(() => {
@@ -237,6 +298,203 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [discussion.id]);
 
+  // 辅助：处理流式总结并返回结果
+  const handleSummaryStream = async (
+    summaryResponse: Response,
+  ): Promise<{ roundSummary: any; updatedSession: any }> => {
+    if (!summaryResponse.ok) {
+      throw new Error('Failed to generate summary');
+    }
+
+    let roundSummary: any = null;
+    let updatedSession: any = null;
+    let summaryBuffer = '';
+
+    const reader = summaryResponse.body?.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    if (!reader) {
+      throw new Error('Failed to get summary stream');
+    }
+
+    // 主持人开始思考
+    setSummaryStreamStatus('thinking');
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            
+            if (data.type === 'chunk') {
+              // chunk 到达 → typing 状态
+              setSummaryStreamStatus('typing');
+              summaryBuffer += data.content;
+              setCurrentSummaryText(summaryBuffer);
+            } else if (data.type === 'done') {
+              roundSummary = data.roundSummary;
+              updatedSession = data.session;
+              setCurrentSummaryText(data.roundSummary?.overallSummary || summaryBuffer);
+              setSummaryStreamStatus(null); // 完成
+              if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
+                currentRoundPromptsRef.current.moderator = {
+                  systemPrompt: data.moderatorPrompts.systemPrompt,
+                  userPrompt: data.moderatorPrompts.userPrompt,
+                };
+              }
+            } else if (data.type === 'error') {
+              setSummaryStreamStatus(null);
+              throw new Error(data.error);
+            }
+          } catch (e) {
+            console.error('Error parsing summary SSE data:', e);
+          }
+        }
+      }
+    }
+
+    setSummaryStreamStatus(null);
+
+    if (!roundSummary || !updatedSession) {
+      throw new Error('Failed to get complete summary');
+    }
+
+    return { roundSummary, updatedSession };
+  };
+
+  // 辅助：构建 moderatorAnalysis 对象
+  const buildModeratorAnalysis = (roundSummary: any, roundIndex: number) => ({
+    round: roundSummary.roundIndex || roundIndex,
+    consensusLevel: roundSummary.consensusLevel ?? 50,
+    summary: currentSummaryText || roundSummary.overallSummary || '本轮讨论已完成',
+    newPoints: (roundSummary.insights && roundSummary.insights.length > 0) 
+      ? roundSummary.insights.slice(0, 2) 
+      : ['暂无新观点'],
+    consensus: (roundSummary.consensus && roundSummary.consensus.length > 0)
+      ? roundSummary.consensus.map((c: any) => ({
+          content: c.point || '',
+          agents: c.supportingAgents || [],
+          percentage: Math.round(((c.supportCount || 0) / (c.totalAgents || discussion.agents.length)) * 100),
+        }))
+      : [],
+    disagreements: (roundSummary.conflicts && roundSummary.conflicts.length > 0)
+      ? roundSummary.conflicts.map((c: any) => ({
+          topic: c.issue || '',
+          description: (c.positions && c.positions.length > 0)
+            ? c.positions.map((p: any) => `${p.agentName}: ${p.position}`).join('; ')
+            : '暂无详细描述',
+          supportAgents: (c.positions && c.positions.length > 0)
+            ? c.positions.slice(0, 2).map((p: any) => ({
+                name: p.agentName || 'Unknown',
+                color: discussion.agents.find(a => a.name === p.agentName)?.color || 'bg-gray-500',
+              }))
+            : [],
+          opposeAgents: [],
+        }))
+      : [],
+    sentimentSummary: (roundSummary.sentimentSummary && Array.isArray(roundSummary.sentimentSummary) && roundSummary.sentimentSummary.length > 0)
+      ? roundSummary.sentimentSummary.map((s: any) => ({
+          stock: s.stock || '',
+          bullishAgents: s.bullishAgents || [],
+          bearishAgents: s.bearishAgents || [],
+          neutralAgents: s.neutralAgents || [],
+          overallSentiment: s.overallSentiment || 'neutral',
+        }))
+      : undefined,
+  });
+
+  // 辅助：依次执行一批 reply 请求（逐个agent，模拟群聊）
+  const executeReplyBatch = async (
+    replyRound: number,
+    roundIndex: number,
+    allSpeeches: Array<{ agentId: string; agentName: string; content: string }>,
+    previousReplies: Array<{ agentId: string; agentName: string; content: string; replyRound: number }>,
+    previousRoundComments?: Array<{ agentId: string; agentName: string; content: string }>,
+  ): Promise<Array<{ agentId: string; agentName: string; content: string; replyRound: number; targetAgentId?: string; targetAgentName?: string; systemPrompt?: string; userPrompt?: string; sentiments?: StockSentiment[] }>> => {
+    const results: Array<{ agentId: string; agentName: string; content: string; replyRound: number; targetAgentId?: string; targetAgentName?: string; systemPrompt?: string; userPrompt?: string; sentiments?: StockSentiment[] }> = [];
+
+    // 依次处理每个 agent（非并行，像群聊一样逐个发言）
+    for (const agent of discussion.agents) {
+      const mySpeech = allSpeeches.find(s => s.agentId === agent.id)?.content || '';
+
+      const response = await fetch('/api/agents/reply/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: discussion.id,
+          agentId: agent.id,
+          roundIndex,
+          replyRound,
+          allSpeeches: allSpeeches.map(s => ({ agentId: s.agentId, agentName: s.agentName, content: s.content })),
+          mySpeech,
+          previousReplies: previousReplies.length > 0 ? previousReplies : undefined,
+          previousRoundComments: previousRoundComments,
+          sessionData: discussion.sessionData,
+        }),
+      });
+
+      const replyKey = `reply_${agent.id}_r${replyRound}`;
+
+      const result = await handleStreamResponse(
+        response,
+        agent.id,
+        agent.name || 'Unknown Agent',
+        agent.color || 'bg-gray-500',
+        (content, targetId, targetName, _systemPrompt, _userPrompt, sentimentsData, streamStatus) => {
+          setCurrentRoundComments(prev => {
+            const newMap = new Map(prev);
+            newMap.set(replyKey, {
+              agentId: agent.id,
+              agentName: agent.name || 'Unknown Agent',
+              agentColor: agent.color || 'bg-gray-500',
+              content: content || '',
+              expanded: false,
+              type: 'reply',
+              replyRound,
+              targetAgentId: targetId,
+              targetAgentName: targetName,
+              sentiments: sentimentsData,
+              streamStatus,
+            });
+            return newMap;
+          });
+        }
+      );
+
+      // 保存 prompts
+      if (result.systemPrompt && result.userPrompt) {
+        currentRoundPromptsRef.current.agents.push({
+          agentId: agent.id,
+          agentName: agent.name || 'Unknown Agent',
+          systemPrompt: result.systemPrompt,
+          userPrompt: result.userPrompt,
+        });
+      }
+
+      results.push({
+        agentId: agent.id,
+        agentName: agent.name || 'Unknown Agent',
+        content: result.content,
+        replyRound,
+        targetAgentId: result.targetAgentId,
+        targetAgentName: result.targetAgentName,
+        systemPrompt: result.systemPrompt,
+        userPrompt: result.userPrompt,
+        sentiments: result.sentiments,
+      });
+    }
+
+    return results;
+  };
+
   // 开始第一轮讨论
   const startFirstRound = async () => {
     if (!discussion.id || !discussion.sessionData) return;
@@ -247,24 +505,16 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     // 重置prompts收集
     currentRoundPromptsRef.current = { agents: [] };
 
-    // 初始化评论状态
-    const initialComments = new Map<string, AgentComment>();
-    discussion.agents.forEach(agent => {
-      initialComments.set(agent.id, {
-        agentId: agent.id,
-        agentName: agent.name,
-        agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-        content: '正在发言...',
-        expanded: false,
-      });
-    });
-    setCurrentRoundComments(initialComments);
+    // 初始化评论状态（空，会在每个agent发言时逐个填充）
+    setCurrentRoundComments(new Map());
 
     try {
       const sessionData = discussion.sessionData;
       
-      // 步骤 1: 并行请求所有 Agent 的发言（流式）
-      const speechPromises = discussion.agents.map(async (agent) => {
+      // 步骤 1: 依次请求每个 Agent 的观点阐述（逐个发言，像群聊一样）
+      const speeches: Array<{ agentId: string; agentName: string; content: string; sentiments?: StockSentiment[] }> = [];
+
+      for (const agent of discussion.agents) {
         const response = await fetch('/api/agents/speech/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -279,25 +529,27 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         const speech = await handleStreamResponse(
           response,
           agent.id,
-          agent.name || 'Unknown Agent', // 防止undefined
-          agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-          (content) => {
+          agent.name || 'Unknown Agent',
+          agent.color || 'bg-gray-500',
+          (content, _targetAgentId, _targetAgentName, _systemPrompt, _userPrompt, sentimentsData, streamStatus) => {
             setCurrentRoundComments(prev => {
               const newMap = new Map(prev);
-              const existing = newMap.get(agent.id);
               newMap.set(agent.id, {
                 agentId: agent.id,
-                agentName: agent.name || 'Unknown Agent', // 防止undefined
-                agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-                content: content || '', // 防止undefined
-                expanded: existing?.expanded ?? false,
+                agentName: agent.name || 'Unknown Agent',
+                agentColor: agent.color || 'bg-gray-500',
+                content: content || '',
+                expanded: false,
+                type: 'speech',
+                sentiments: sentimentsData,
+                streamStatus,
               });
               return newMap;
             });
           }
         );
 
-        // 保存agent的prompts
+        // 保存agent的prompts（speech phase）
         if (speech.systemPrompt && speech.userPrompt) {
           currentRoundPromptsRef.current.agents.push({
             agentId: agent.id,
@@ -307,126 +559,86 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           });
         }
 
-        return { agentId: agent.id, agentName: agent.name, speech };
-      });
+        speeches.push({ agentId: agent.id, agentName: agent.name || 'Unknown Agent', content: speech.content, sentiments: speech.sentiments });
+      }
 
-      const speeches = await Promise.all(speechPromises);
-
-      // 第一轮不需要互评，直接生成总结
-      // 步骤 2: 流式请求总结（第一轮不包含互评）
-      setCurrentRoundStatus('summary');
-      setCurrentSummaryText(''); // 重置总结文本
+      // 步骤 2: 每个 Agent 进行 1 次针对性回复（并行）
+      setCurrentRoundStatus('review');
       
+      const replies = await executeReplyBatch(1, 1, speeches, []);
+
+      // 步骤 3: 流式请求总结
+      setCurrentRoundStatus('summary');
+      setCurrentSummaryText('');
+      
+      // 准备 summary 数据
+      const agentsSpeeches = speeches.map(s => ({
+        agentId: s.agentId,
+        agentName: s.agentName,
+        speech: s.content,
+      }));
+
+      const agentsReplies = replies.map(r => ({
+        agentId: r.agentId,
+        agentName: r.agentName,
+        reply: r.content,
+        replyRound: r.replyRound,
+      }));
+
       const summaryResponse = await fetch('/api/rounds/summary/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId: discussion.id,
           roundIndex: 1,
-          agentsSpeeches: speeches,
-          agentsReviews: [], // 第一轮没有互评
+          agentsSpeeches,
+          agentsReviews: [],
+          agentsReplies,
           sessionData: sessionData,
         }),
       });
 
-      if (!summaryResponse.ok) {
-        throw new Error('Failed to generate summary');
-      }
+      const { roundSummary, updatedSession } = await handleSummaryStream(summaryResponse);
 
-      // 处理流式响应
-      let roundSummary: any = null;
-      let updatedSession: any = null;
-      let summaryBuffer = '';
-
-      const reader = summaryResponse.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      if (!reader) {
-        throw new Error('Failed to get summary stream');
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              
-              if (data.type === 'chunk') {
-                summaryBuffer += data.content;
-                // 实时更新总结文本（打字机效果）
-                setCurrentSummaryText(summaryBuffer);
-              } else if (data.type === 'done') {
-                roundSummary = data.roundSummary;
-                updatedSession = data.session;
-                // 确保最终文本已设置
-                setCurrentSummaryText(data.roundSummary?.overallSummary || summaryBuffer);
-                // 保存主持人的prompts
-                if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
-                  currentRoundPromptsRef.current.moderator = {
-                    systemPrompt: data.moderatorPrompts.systemPrompt,
-                    userPrompt: data.moderatorPrompts.userPrompt,
-                  };
-                }
-              } else if (data.type === 'error') {
-                throw new Error(data.error);
-              }
-            } catch (e) {
-              console.error('Error parsing summary SSE data:', e);
-            }
-          }
-        }
-      }
-
-      if (!roundSummary || !updatedSession) {
-        throw new Error('Failed to get complete summary');
-      }
-
-      // 获取最新的 comments（在总结生成时，所有发言应该已经完成）
+      // 收集所有 comments（speech + reply）
       setCurrentRoundComments(prev => {
-        const finalComments = Array.from(prev.values());
+        const allComments: AgentComment[] = [];
         
-        const moderatorAnalysis = {
-          round: roundSummary.roundIndex || 1,
-          consensusLevel: roundSummary.consensusLevel ?? 50,
-          summary: currentSummaryText || roundSummary.overallSummary || '本轮讨论已完成',
-          newPoints: (roundSummary.insights && roundSummary.insights.length > 0) 
-            ? roundSummary.insights.slice(0, 2) 
-            : ['暂无新观点'],
-          consensus: (roundSummary.consensus && roundSummary.consensus.length > 0)
-            ? roundSummary.consensus.map((c: any) => ({
-                content: c.point || '',
-                agents: c.supportingAgents || [],
-                percentage: Math.round(((c.supportCount || 0) / (c.totalAgents || discussion.agents.length)) * 100),
-              }))
-            : [],
-          disagreements: (roundSummary.conflicts && roundSummary.conflicts.length > 0)
-            ? roundSummary.conflicts.map((c: any) => ({
-                topic: c.issue || '',
-                description: (c.positions && c.positions.length > 0)
-                  ? c.positions.map((p: any) => `${p.agentName}: ${p.position}`).join('; ')
-                  : '暂无详细描述',
-                supportAgents: (c.positions && c.positions.length > 0)
-                  ? c.positions.slice(0, 2).map((p: any) => ({
-                      name: p.agentName || 'Unknown',
-                      color: discussion.agents.find(a => a.name === p.agentName)?.color || 'bg-gray-500',
-                    }))
-                  : [],
-                opposeAgents: [],
-              }))
-            : [],
-        };
+        // 添加观点阐述
+        for (const speech of speeches) {
+          const existing = prev.get(speech.agentId);
+          allComments.push({
+            agentId: speech.agentId,
+            agentName: speech.agentName,
+            agentColor: existing?.agentColor || discussion.agents.find(a => a.id === speech.agentId)?.color || 'bg-gray-500',
+            content: speech.content,
+            expanded: false,
+            type: 'speech',
+            sentiments: speech.sentiments,
+          });
+        }
+
+        // 添加针对性回复
+        for (const reply of replies) {
+          allComments.push({
+            agentId: reply.agentId,
+            agentName: reply.agentName,
+            agentColor: discussion.agents.find(a => a.id === reply.agentId)?.color || 'bg-gray-500',
+            content: reply.content,
+            expanded: false,
+            type: 'reply',
+            replyRound: 1,
+            targetAgentId: reply.targetAgentId,
+            targetAgentName: reply.targetAgentName,
+            sentiments: reply.sentiments,
+          });
+        }
+
+        const moderatorAnalysis = buildModeratorAnalysis(roundSummary, 1);
 
         const firstRound: RoundData = {
           roundIndex: roundSummary.roundIndex || 1,
-          comments: finalComments,
+          comments: allComments,
           moderatorAnalysis,
           prompts: {
             agents: [...currentRoundPromptsRef.current.agents],
@@ -434,28 +646,26 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           },
         };
 
-        // 使用 setTimeout 将父组件更新推迟到下一个事件循环，避免在渲染过程中更新
         setTimeout(() => {
           const updatedDiscussion = {
             ...discussion,
             rounds: [firstRound],
-            comments: finalComments,
+            comments: allComments,
             moderatorAnalysis,
             sessionData: updatedSession,
           };
           onUpdateDiscussion(updatedDiscussion);
-          // 同步保存到localStorage
           saveDiscussionToHistory(updatedDiscussion);
         }, 0);
 
         setCurrentRoundStatus('complete');
-        setCurrentSummaryText(''); // 重置总结文本
-        return new Map(); // 清空当前轮次的评论
+        setCurrentSummaryText('');
+        return new Map();
       });
     } catch (error) {
       console.error('Error starting first round:', error);
       setCurrentRoundStatus('idle');
-      setCurrentSummaryText(''); // 重置总结文本
+      setCurrentSummaryText('');
       alert(`开始讨论失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setIsLoading(false);
@@ -542,8 +752,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     agentId: string,
     agentName: string,
     agentColor: string,
-    updateContent: (content: string, targetAgentId?: string, targetAgentName?: string, systemPrompt?: string, userPrompt?: string) => void
-  ): Promise<{ content: string; targetAgentId?: string; targetAgentName?: string; systemPrompt?: string; userPrompt?: string }> => {
+    updateContent: (content: string, targetAgentId?: string, targetAgentName?: string, systemPrompt?: string, userPrompt?: string, sentiments?: StockSentiment[], streamStatus?: 'thinking' | 'typing') => void
+  ): Promise<{ content: string; targetAgentId?: string; targetAgentName?: string; systemPrompt?: string; userPrompt?: string; sentiments?: StockSentiment[] }> => {
     if (!response.ok) {
       const agentNameSafe = agentName || 'Unknown Agent';
       throw new Error(`Failed to get response for ${agentNameSafe}`);
@@ -557,6 +767,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     let targetAgentName: string | undefined;
     let savedSystemPrompt: string | undefined;
     let savedUserPrompt: string | undefined;
+    let sentiments: StockSentiment[] | undefined;
+    let hasReceivedChunk = false;
 
     if (!reader) {
       throw new Error('Failed to get response stream');
@@ -571,33 +783,43 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (!line || typeof line !== 'string') continue; // 跳过无效的行
+        if (!line || typeof line !== 'string') continue;
         if (line.startsWith('data: ')) {
           try {
             const jsonStr = line.slice(6).trim();
-            if (!jsonStr) continue; // 跳过空的数据行
+            if (!jsonStr) continue;
             
             const data = JSON.parse(jsonStr);
             
-            if (!data || typeof data !== 'object') continue; // 跳过无效的数据对象
-            
-            if (data.type === 'chunk') {
+            if (!data || typeof data !== 'object') continue;
+
+            if (data.type === 'start') {
+              // 收到 start 事件 → "thinking..." 状态
+              updateContent('', undefined, undefined, undefined, undefined, undefined, 'thinking');
+            } else if (data.type === 'chunk') {
               const chunkContent = data.content || '';
               fullContent += chunkContent;
-              // 实时更新 UI（打字机效果）
-              updateContent(fullContent, targetAgentId, targetAgentName);
+              hasReceivedChunk = true;
+              // 实时更新 UI（打字机效果）— 隐藏 [SENTIMENT] 标记及之后的内容
+              const sentimentIdx = fullContent.indexOf('[SENTIMENT]');
+              const displayContent = sentimentIdx !== -1 ? fullContent.substring(0, sentimentIdx).trim() : fullContent;
+              updateContent(displayContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'typing');
             } else if (data.type === 'done') {
-              fullContent = data.speech || data.review || fullContent || '';
-              // 保存目标agent信息（如果有）
+              // 后端已经去掉了 [SENTIMENT] 标记，直接用干净的内容
+              fullContent = data.speech || data.review || data.reply || fullContent || '';
               if (data.targetAgentId && data.targetAgentName) {
                 targetAgentId = String(data.targetAgentId);
                 targetAgentName = String(data.targetAgentName);
               }
-              // 保存prompts（如果有）
               if (data.systemPrompt && data.userPrompt) {
                 savedSystemPrompt = String(data.systemPrompt);
                 savedUserPrompt = String(data.userPrompt);
               }
+              if (data.sentiments && Array.isArray(data.sentiments) && data.sentiments.length > 0) {
+                sentiments = data.sentiments;
+              }
+              // 最终更新 UI — 不传 streamStatus 表示完成
+              updateContent(fullContent, targetAgentId, targetAgentName, savedSystemPrompt, savedUserPrompt, sentiments, undefined);
             } else if (data.type === 'error') {
               const errorMessage = data.error ? String(data.error) : 'Unknown error occurred';
               throw new Error(errorMessage);
@@ -605,40 +827,31 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           } catch (e) {
             console.error('Error parsing SSE data:', e);
             console.error('Problematic line:', line);
-            // 不抛出错误，继续处理下一行
           }
         }
       }
     }
 
-    return { content: fullContent, targetAgentId, targetAgentName, systemPrompt: savedSystemPrompt, userPrompt: savedUserPrompt };
+    return { content: fullContent, targetAgentId, targetAgentName, systemPrompt: savedSystemPrompt, userPrompt: savedUserPrompt, sentiments };
   };
 
-  // 开始新一轮讨论（瀑布流方式）
+  // 开始新一轮讨论（第二轮+：2次针对性回复 -> 总结，不再有观点阐述）
   const startNextRound = async (roundIndex: number) => {
     if (!discussion.id || !discussion.sessionData || isLoading) return;
 
     setIsLoading(true);
-    setCurrentRoundStatus('speech');
+    setCurrentRoundStatus('review'); // 直接进入回复阶段
     setCurrentRoundIndex(roundIndex);
+    // 重置prompts收集
+    currentRoundPromptsRef.current = { agents: [] };
 
-    // 初始化评论状态
-    const initialComments = new Map<string, AgentComment>();
-    discussion.agents.forEach(agent => {
-      initialComments.set(agent.id, {
-        agentId: agent.id,
-        agentName: agent.name,
-        agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-        content: '正在发言...',
-        expanded: false,
-      });
-    });
-    setCurrentRoundComments(initialComments);
+    // 初始化评论状态（空的，会在回复时填充）
+    setCurrentRoundComments(new Map());
 
     try {
       const sessionData = discussion.sessionData;
       
-      // 获取上一轮的原始发言数据（用于后续轮次的辩论prompt）
+      // 获取上一轮的原始发言数据（所有comments，包含speech和reply）
       const previousRoundData = rounds.length > 0 ? rounds[rounds.length - 1] : null;
       const previousRoundComments = previousRoundData?.comments?.map(c => ({
         agentId: c.agentId,
@@ -646,225 +859,82 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         content: c.content,
       })) || [];
 
-      // 步骤 1: 并行请求所有 Agent 的发言（流式）
-      const speechPromises = discussion.agents.map(async (agent) => {
-        const response = await fetch('/api/agents/speech/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: discussion.id,
-            agentId: agent.id,
-            roundIndex: roundIndex,
-            sessionData: sessionData,
-            previousRoundComments: previousRoundComments,
-          }),
-        });
+      // 收集所有2次回复
+      const allReplies: Array<{ agentId: string; agentName: string; content: string; replyRound: number; targetAgentId?: string; targetAgentName?: string; sentiments?: StockSentiment[] }> = [];
 
-        const speechResult = await handleStreamResponse(
-          response,
-          agent.id,
-          agent.name || 'Unknown Agent', // 防止undefined
-          agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-          (content, targetAgentId, targetAgentName) => {
-            setCurrentRoundComments(prev => {
-              const newMap = new Map(prev);
-              const existing = newMap.get(agent.id);
-              newMap.set(agent.id, {
-                agentId: agent.id,
-                agentName: agent.name || 'Unknown Agent', // 防止undefined
-                agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-                content: content || '', // 防止undefined
-                expanded: existing?.expanded ?? false,
-                targetAgentId: targetAgentId || existing?.targetAgentId,
-                targetAgentName: targetAgentName || existing?.targetAgentName,
-              });
-              return newMap;
-            });
-          }
-        );
+      // 2次循环针对性回复
+      for (let replyRound = 1; replyRound <= 2; replyRound++) {
+        // 确定本次回复的上下文
+        let contextSpeeches: Array<{ agentId: string; agentName: string; content: string }>;
+        let previousRepliesForBatch: Array<{ agentId: string; agentName: string; content: string; replyRound: number }>;
 
-        // 保存agent的prompts
-        if (speechResult.systemPrompt && speechResult.userPrompt) {
-          currentRoundPromptsRef.current.agents.push({
-            agentId: agent.id,
-            agentName: agent.name || 'Unknown Agent',
-            systemPrompt: speechResult.systemPrompt,
-            userPrompt: speechResult.userPrompt,
-          });
+        if (replyRound === 1) {
+          // 第1次回复：基于上一轮最后一批回复/发言
+          contextSpeeches = previousRoundComments;
+          previousRepliesForBatch = [];
+        } else {
+          // 第2次回复：基于前几次回复内容
+          contextSpeeches = previousRoundComments;
+          previousRepliesForBatch = allReplies.filter(r => r.replyRound < replyRound);
         }
 
-        return { 
-          agentId: agent.id, 
-          agentName: agent.name, 
-          speech: speechResult.content,
-          targetAgentId: speechResult.targetAgentId,
-          targetAgentName: speechResult.targetAgentName,
-        };
-      });
-
-      const speeches = await Promise.all(speechPromises);
-
-      // 步骤 2: 为每个 Agent 分配一个要点评的 Agent（循环分配）
-      // 例如：agent0 点评 agent1，agent1 点评 agent2，agent2 点评 agent3，agent3 点评 agent0
-      setCurrentRoundStatus('review');
-      
-      const reviewPromises = discussion.agents.map(async (agent, index) => {
-        // 计算要点评的 agent 索引（循环分配）
-        const targetAgentIndex = (index + 1) % discussion.agents.length;
-        const targetAgent = discussion.agents[targetAgentIndex];
-        const targetSpeech = speeches.find(s => s.agentId === targetAgent.id);
-        
-        if (!targetSpeech) {
-          throw new Error(`Target agent speech not found for ${targetAgent.name}`);
-        }
-
-        // 只传入被点评 agent 的发言
-        const targetAgentSpeechText = `【${targetSpeech.agentName}（${targetSpeech.agentId}）】\n${targetSpeech.speech}`;
-
-        const response = await fetch('/api/agents/review/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: discussion.id,
-            agentId: agent.id,
-            roundIndex: roundIndex,
-            otherAgentsSpeeches: targetAgentSpeechText, // 只传入一个 agent 的发言
-            sessionData: sessionData,
-          }),
-        });
-
-        const reviewResult = await handleStreamResponse(
-          response,
-          agent.id,
-          agent.name || 'Unknown Agent', // 防止undefined
-          agent.color || 'bg-gray-500', // 默认颜色，防止undefined
-          (content) => {
-            // 互评暂时不更新 UI，只在完成后更新
-            // 如果需要实时显示互评，可以在这里添加更新逻辑
-          }
+        const batchReplies = await executeReplyBatch(
+          replyRound,
+          roundIndex,
+          contextSpeeches,
+          previousRepliesForBatch,
+          previousRoundComments,
         );
 
-        return { 
-          agentId: agent.id, 
-          agentName: agent.name, 
-          review: reviewResult.content,
-          targetAgentId: targetAgent.id,
-          targetAgentName: targetAgent.name,
-        };
-      });
+        allReplies.push(...batchReplies);
+      }
 
-      const reviews = await Promise.all(reviewPromises);
-
-      // 步骤 4: 流式请求总结
+      // 步骤 2: 流式请求总结
       setCurrentRoundStatus('summary');
-      setCurrentSummaryText(''); // 重置总结文本
-      
+      setCurrentSummaryText('');
+
+      const agentsReplies = allReplies.map(r => ({
+        agentId: r.agentId,
+        agentName: r.agentName,
+        reply: r.content,
+        replyRound: r.replyRound,
+      }));
+
       const summaryResponse = await fetch('/api/rounds/summary/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId: discussion.id,
           roundIndex: roundIndex,
-          agentsSpeeches: speeches,
-          agentsReviews: reviews,
+          agentsSpeeches: [], // 第二轮+没有观点阐述
+          agentsReviews: [],
+          agentsReplies,
           sessionData: sessionData,
         }),
       });
 
-      if (!summaryResponse.ok) {
-        throw new Error('Failed to generate summary');
-      }
+      const { roundSummary, updatedSession } = await handleSummaryStream(summaryResponse);
 
-      // 处理流式响应
-      let roundSummary: any = null;
-      let updatedSession: any = null;
-      let summaryBuffer = '';
-
-      const reader = summaryResponse.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      if (!reader) {
-        throw new Error('Failed to get summary stream');
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              
-              if (data.type === 'chunk') {
-                summaryBuffer += data.content;
-                // 实时更新总结文本（打字机效果）
-                setCurrentSummaryText(summaryBuffer);
-              } else if (data.type === 'done') {
-                roundSummary = data.roundSummary;
-                updatedSession = data.session;
-                // 确保最终文本已设置
-                setCurrentSummaryText(data.roundSummary?.overallSummary || summaryBuffer);
-              } else if (data.type === 'error') {
-                throw new Error(data.error);
-              }
-            } catch (e) {
-              console.error('Error parsing summary SSE data:', e);
-            }
-          }
-        }
-      }
-
-      if (!roundSummary || !updatedSession) {
-        throw new Error('Failed to get complete summary');
-      }
-
-      // 获取最新的 comments
-      setCurrentRoundComments(prev => {
-        const finalComments = Array.from(prev.values()).map(comment => ({
-          ...comment,
-          expanded: comment.expanded ?? false, // 确保所有comments都有expanded属性
+      // 收集所有 comments（全是 reply）
+      setCurrentRoundComments(() => {
+        const allComments: AgentComment[] = allReplies.map(reply => ({
+          agentId: reply.agentId,
+          agentName: reply.agentName,
+          agentColor: discussion.agents.find(a => a.id === reply.agentId)?.color || 'bg-gray-500',
+          content: reply.content,
+          expanded: false,
+          type: 'reply' as const,
+          replyRound: reply.replyRound,
+          targetAgentId: reply.targetAgentId,
+          targetAgentName: reply.targetAgentName,
+          sentiments: reply.sentiments,
         }));
-        
-        const moderatorAnalysis = {
-          round: roundSummary.roundIndex || roundIndex,
-          consensusLevel: roundSummary.consensusLevel ?? 50,
-          summary: currentSummaryText || roundSummary.overallSummary || '本轮讨论已完成',
-          newPoints: (roundSummary.insights && roundSummary.insights.length > 0) 
-            ? roundSummary.insights.slice(0, 2) 
-            : ['暂无新观点'],
-          consensus: (roundSummary.consensus && roundSummary.consensus.length > 0)
-            ? roundSummary.consensus.map((c: any) => ({
-                content: c.point || '',
-                agents: c.supportingAgents || [],
-                percentage: Math.round(((c.supportCount || 0) / (c.totalAgents || discussion.agents.length)) * 100),
-              }))
-            : [],
-          disagreements: (roundSummary.conflicts && roundSummary.conflicts.length > 0)
-            ? roundSummary.conflicts.map((c: any) => ({
-                topic: c.issue || '',
-                description: (c.positions && c.positions.length > 0)
-                  ? c.positions.map((p: any) => `${p.agentName}: ${p.position}`).join('; ')
-                  : '暂无详细描述',
-                supportAgents: (c.positions && c.positions.length > 0)
-                  ? c.positions.slice(0, 2).map((p: any) => ({
-                      name: p.agentName || 'Unknown',
-                      color: discussion.agents.find(a => a.name === p.agentName)?.color || 'bg-gray-500',
-                    }))
-                  : [],
-                opposeAgents: [],
-              }))
-            : [],
-        };
+
+        const moderatorAnalysis = buildModeratorAnalysis(roundSummary, roundIndex);
 
         const newRound: RoundData = {
           roundIndex: roundSummary.roundIndex || roundIndex,
-          comments: finalComments,
+          comments: allComments,
           moderatorAnalysis,
           prompts: {
             agents: [...currentRoundPromptsRef.current.agents],
@@ -872,31 +942,28 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           },
         };
 
-        // 追加新轮次到现有轮次列表
         const updatedRounds = [...rounds, newRound];
 
-        // 使用 setTimeout 将父组件更新推迟到下一个事件循环，避免在渲染过程中更新
         setTimeout(() => {
           const updatedDiscussion = {
             ...discussion,
             rounds: updatedRounds,
-            comments: finalComments,
+            comments: allComments,
             sessionData: updatedSession,
             moderatorAnalysis,
           };
           onUpdateDiscussion(updatedDiscussion);
-          // 同步保存到localStorage
           saveDiscussionToHistory(updatedDiscussion);
         }, 0);
 
         setCurrentRoundStatus('complete');
-        setCurrentSummaryText(''); // 重置总结文本
-        return new Map(); // 清空当前轮次的评论
+        setCurrentSummaryText('');
+        return new Map();
       });
     } catch (error) {
       console.error('Error starting next round:', error);
       setCurrentRoundStatus('idle');
-      setCurrentSummaryText(''); // 重置总结文本
+      setCurrentSummaryText('');
       alert(`继续讨论失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setIsLoading(false);
@@ -932,9 +999,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         >
           <Menu className="w-5 h-5 text-gray-700" />
         </button>
-        <div className="flex-1 text-center">
-          <h1 className="text-base font-medium text-gray-900 leading-tight">{discussion.title}</h1>
-          <p className="text-xs text-gray-400">{discussion.agents.length}位专家讨论中</p>
+        <div className="flex-1 text-center px-2">
+          <h1 className="text-base font-medium text-gray-900 leading-tight truncate">{discussion.title}</h1>
         </div>
         <button
           onClick={onBack}
@@ -975,58 +1041,244 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
 
               {/* Agent Comments - 群聊气泡 */}
-              {round.comments.map((comment) => (
-                <div key={`${round.roundIndex}-${comment.agentId}`} className="flex items-start gap-2.5">
+              {round.comments.map((comment, commentIdx) => (
+                <div key={`${round.roundIndex}-${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${commentIdx}`} className="flex items-start gap-2.5">
                   {/* 头像 */}
                   <div className={`w-9 h-9 ${comment.agentColor} rounded-lg flex-shrink-0 flex items-center justify-center text-white text-sm font-medium shadow-sm`}>
                     {comment.agentName[0]}
                   </div>
-                  {/* 名称 + 气泡 */}
+                  {/* 名称 + 状态 + 气泡 */}
                   <div className="max-w-[85%] min-w-0">
-                    <span className="text-xs text-gray-500 mb-1 block">{comment.agentName}</span>
-                    <div className={`${getBubbleBgColor(comment.agentColor)} rounded-2xl rounded-tl-md px-3.5 py-2.5 shadow-sm`}>
-                      <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-words">
-                        {comment.content}
-                      </div>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className="text-xs text-gray-500">{comment.agentName}</span>
+                      {comment.type === 'reply' && comment.replyRound && !comment.streamStatus && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 text-indigo-600 rounded-full">回复{comment.replyRound}</span>
+                      )}
+                      {/* 流式状态指示 */}
+                      {comment.streamStatus === 'thinking' && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-amber-500 animate-pulse">
+                          <span className="relative flex h-1.5 w-1.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
+                          </span>
+                          thinking
+                        </span>
+                      )}
+                      {comment.streamStatus === 'typing' && (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
+                          <span className="flex gap-0.5">
+                            <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                            <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                            <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                          </span>
+                          typing
+                        </span>
+                      )}
                     </div>
+                    {/* 气泡：thinking状态显示占位气泡，有内容时显示正常气泡 */}
+                    {comment.streamStatus === 'thinking' && !comment.content ? (
+                      <div className={`${getBubbleBgColor(comment.agentColor)} rounded-2xl rounded-tl-md px-3.5 py-2.5 shadow-sm`}>
+                        <div className="flex gap-1 py-1">
+                          <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className={`${getBubbleBgColor(comment.agentColor)} rounded-2xl rounded-tl-md px-3.5 py-2.5 shadow-sm`}>
+                        <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-words">
+                          {renderContentWithMentions(comment.content, discussion.agents)}
+                        </div>
+                      </div>
+                    )}
+                    {/* 情绪标签 */}
+                    {comment.sentiments && comment.sentiments.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1.5">
+                        {comment.sentiments.map((s, sIdx) => (
+                          <span
+                            key={sIdx}
+                            className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                              s.sentiment === 'bullish'
+                                ? 'bg-red-50 text-red-600 border border-red-200'
+                                : s.sentiment === 'bearish'
+                                ? 'bg-green-50 text-green-600 border border-green-200'
+                                : 'bg-gray-50 text-gray-500 border border-gray-200'
+                            }`}
+                          >
+                            <span>{s.sentiment === 'bullish' ? '📈' : s.sentiment === 'bearish' ? '📉' : '➖'}</span>
+                            <span>{s.stock}</span>
+                            <span>{s.sentiment === 'bullish' ? '看涨' : s.sentiment === 'bearish' ? '看跌' : '中性'}</span>
+                            {s.confidence && (
+                              <span className="opacity-60">
+                                {s.confidence === 'high' ? '●●●' : s.confidence === 'medium' ? '●●○' : '●○○'}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
 
               {/* Moderator Analysis - 居中系统消息 */}
-              <div className="flex justify-center py-1">
+              {/* 仅在已完成的轮次 或 summary阶段 才显示主持人区块 */}
+              {(!(round as any)._isInProgress || (round as any)._showModerator) && (() => {
+                const isStreaming = !!(round as any)._summaryStreamStatus;
+                const isComplete = !isStreaming && round.moderatorAnalysis.consensusLevel > 0;
+                const cl = round.moderatorAnalysis.consensusLevel;
+                return (
+              <div className="flex justify-center py-1.5">
                 <div 
-                  className="max-w-[85%] bg-white/90 backdrop-blur-sm rounded-xl px-4 py-3 shadow-sm border border-gray-100 cursor-pointer hover:bg-white transition-colors"
+                  className="w-[92%] bg-white/95 backdrop-blur-sm rounded-2xl px-4 py-3.5 shadow-sm border border-gray-200/60 cursor-pointer hover:shadow-md transition-all"
                   onClick={() => setShowSummary(true)}
                 >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <div className="w-5 h-5 bg-indigo-500 rounded-full flex items-center justify-center flex-shrink-0">
-                      <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                  {/* 标题行：主持人头像 + 名称 + 状态 */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-6 h-6 bg-indigo-500 rounded-full flex items-center justify-center flex-shrink-0">
+                      <svg className="w-3.5 h-3.5 text-white" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
                       </svg>
                     </div>
-                    <span className="text-xs font-medium text-gray-700">第{round.roundIndex}轮总结</span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full text-white ${
-                      round.moderatorAnalysis.consensusLevel >= 80 ? 'bg-green-500' :
-                      round.moderatorAnalysis.consensusLevel >= 60 ? 'bg-blue-500' :
-                      round.moderatorAnalysis.consensusLevel >= 40 ? 'bg-yellow-500' :
-                      'bg-red-500'
-                    }`}>
-                      {round.moderatorAnalysis.consensusLevel >= 80 ? '高度共识' :
-                       round.moderatorAnalysis.consensusLevel >= 60 ? '有进展' :
-                       round.moderatorAnalysis.consensusLevel >= 40 ? '有分歧' :
-                       '分歧较大'} {round.moderatorAnalysis.consensusLevel}%
-                    </span>
+                    <span className="text-xs font-semibold text-gray-800">主持人总结</span>
+                    {/* 流式状态 */}
+                    {(round as any)._summaryStreamStatus === 'thinking' && (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-amber-500 animate-pulse">
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
+                        </span>
+                        thinking
+                      </span>
+                    )}
+                    {(round as any)._summaryStreamStatus === 'typing' && (
+                      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-500">
+                        <span className="flex gap-0.5">
+                          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                        </span>
+                        typing
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-gray-600 leading-relaxed line-clamp-2 mb-2">
-                    {round.moderatorAnalysis.summary}
-                  </p>
-                  <div className="flex items-center gap-1 text-xs text-indigo-500">
-                    <span>查看完整分析</span>
-                    <ChevronDown className="w-3 h-3" />
-                  </div>
+
+                  {/* 共识度进度条 — 完成后突出显示 */}
+                  {isComplete && (
+                    <div className="mb-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[11px] font-medium text-gray-500">共识度</span>
+                        <span className={`text-xs font-bold ${
+                          cl >= 80 ? 'text-green-600' :
+                          cl >= 60 ? 'text-blue-600' :
+                          cl >= 40 ? 'text-yellow-600' :
+                          'text-red-500'
+                        }`}>
+                          {cl}%
+                          <span className="font-normal text-[10px] ml-1">
+                            {cl >= 80 ? '高度共识' : cl >= 60 ? '有进展' : cl >= 40 ? '有分歧' : '分歧较大'}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            cl >= 80 ? 'bg-green-500' :
+                            cl >= 60 ? 'bg-blue-500' :
+                            cl >= 40 ? 'bg-yellow-500' :
+                            'bg-red-400'
+                          }`}
+                          style={{ width: `${cl}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* thinking 状态占位 */}
+                  {(round as any)._summaryStreamStatus === 'thinking' && !round.moderatorAnalysis.summary && (
+                    <div className="flex gap-1 py-2 px-1">
+                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-300 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                    </div>
+                  )}
+
+                  {/* 总结正文 — 多显示一些 */}
+                  {round.moderatorAnalysis.summary && (
+                    <p className={`text-[13px] text-gray-700 leading-relaxed mb-2 ${isStreaming ? '' : 'line-clamp-5'}`}>
+                      {round.moderatorAnalysis.summary}
+                    </p>
+                  )}
+
+                  {/* 情绪汇总 — 完成后显示，放在共识前面更醒目 */}
+                  {isComplete && round.moderatorAnalysis.sentimentSummary && round.moderatorAnalysis.sentimentSummary.length > 0 && (
+                    <div className="mb-2.5 flex flex-wrap gap-1.5">
+                      {round.moderatorAnalysis.sentimentSummary.map((item, sIdx) => (
+                        <span key={sIdx} className={`inline-flex items-center gap-1.5 text-[12px] px-2.5 py-1 rounded-lg font-semibold ${
+                          item.overallSentiment === 'bullish' ? 'bg-red-50 text-red-700 border border-red-200' :
+                          item.overallSentiment === 'bearish' ? 'bg-green-50 text-green-700 border border-green-200' :
+                          item.overallSentiment === 'divided' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                          'bg-gray-50 text-gray-600 border border-gray-200'
+                        }`}>
+                          {item.overallSentiment === 'bullish' ? '📈' :
+                           item.overallSentiment === 'bearish' ? '📉' :
+                           item.overallSentiment === 'divided' ? '⚔️' : '➖'}
+                          <span>{item.stock}</span>
+                          <span>{item.overallSentiment === 'bullish' ? '看涨' :
+                           item.overallSentiment === 'bearish' ? '看跌' :
+                           item.overallSentiment === 'divided' ? '多空分歧' : '中性'}</span>
+                          <span className="text-[10px] opacity-60 font-normal">
+                            {item.bullishAgents.length > 0 ? `涨${item.bullishAgents.length}` : ''}
+                            {item.bearishAgents.length > 0 ? ` 跌${item.bearishAgents.length}` : ''}
+                            {item.neutralAgents.length > 0 ? ` 平${item.neutralAgents.length}` : ''}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 关键共识 — 完成后显示，展示更多条 */}
+                  {isComplete && round.moderatorAnalysis.consensus && round.moderatorAnalysis.consensus.length > 0 && (
+                    <div className="mb-2.5 space-y-1">
+                      <div className="text-[11px] font-medium text-gray-500 mb-0.5">关键共识</div>
+                      {round.moderatorAnalysis.consensus.slice(0, 3).map((item, cIdx) => (
+                        <div key={cIdx} className="flex items-start gap-1.5">
+                          <span className="text-green-500 text-[11px] mt-px flex-shrink-0">✓</span>
+                          <span className="text-[12px] text-gray-700 leading-relaxed flex-1 line-clamp-2">{item.content}</span>
+                          <span className={`text-[10px] flex-shrink-0 px-1.5 py-0.5 rounded-full ${
+                            item.percentage >= 75 ? 'bg-green-100 text-green-700' :
+                            item.percentage >= 50 ? 'bg-blue-100 text-blue-700' :
+                            'bg-gray-100 text-gray-500'
+                          }`}>{item.percentage}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 关键分歧 — 完成后显示 */}
+                  {isComplete && round.moderatorAnalysis.disagreements && round.moderatorAnalysis.disagreements.length > 0 && (
+                    <div className="mb-2.5 space-y-1">
+                      <div className="text-[11px] font-medium text-gray-500 mb-0.5">关键分歧</div>
+                      {round.moderatorAnalysis.disagreements.slice(0, 2).map((item, dIdx) => (
+                        <div key={dIdx} className="flex items-start gap-1.5">
+                          <span className="text-amber-500 text-[11px] mt-px flex-shrink-0">⚡</span>
+                          <span className="text-[12px] text-gray-700 leading-relaxed line-clamp-2">{item.topic}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 查看完整分析按钮 */}
+                  {isComplete && (
+                    <div className="flex items-center justify-center gap-1 text-xs text-indigo-500 pt-1 border-t border-gray-100">
+                      <span>查看完整分析</span>
+                      <ChevronDown className="w-3 h-3" />
+                    </div>
+                  )}
                 </div>
               </div>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -1279,7 +1531,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       </div>
 
                       {/* Disagreements */}
-                      <div>
+                      <div className="mb-6">
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-2">
                             <span className="text-red-600">⤺</span>
@@ -1304,6 +1556,102 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           </div>
                         ))}
                       </div>
+
+                      {/* Sentiment Summary */}
+                      {analysis.sentimentSummary && analysis.sentimentSummary.length > 0 && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <span>📊</span>
+                            <h4 className="text-base text-gray-900">标的情绪</h4>
+                          </div>
+                          {analysis.sentimentSummary.map((item, index) => (
+                            <div key={index} className="mb-3 p-4 bg-gray-50 rounded-xl">
+                              <div className="flex items-center gap-2 mb-3">
+                                <span className={`text-lg ${
+                                  item.overallSentiment === 'bullish' ? 'text-red-500' :
+                                  item.overallSentiment === 'bearish' ? 'text-green-500' :
+                                  item.overallSentiment === 'divided' ? 'text-amber-500' :
+                                  'text-gray-400'
+                                }`}>
+                                  {item.overallSentiment === 'bullish' ? '📈' :
+                                   item.overallSentiment === 'bearish' ? '📉' :
+                                   item.overallSentiment === 'divided' ? '⚔️' : '➖'}
+                                </span>
+                                <h5 className="text-sm font-medium text-gray-900">{item.stock}</h5>
+                                <span className={`text-xs px-2 py-0.5 rounded-full ${
+                                  item.overallSentiment === 'bullish' ? 'bg-red-100 text-red-700' :
+                                  item.overallSentiment === 'bearish' ? 'bg-green-100 text-green-700' :
+                                  item.overallSentiment === 'divided' ? 'bg-amber-100 text-amber-700' :
+                                  'bg-gray-100 text-gray-600'
+                                }`}>
+                                  {item.overallSentiment === 'bullish' ? '整体看涨' :
+                                   item.overallSentiment === 'bearish' ? '整体看跌' :
+                                   item.overallSentiment === 'divided' ? '多空分歧' : '整体中性'}
+                                </span>
+                              </div>
+                              <div className="space-y-1.5">
+                                {item.bullishAgents.length > 0 && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[11px] text-red-500 w-8">看涨</span>
+                                    <div className="flex-1 flex flex-wrap gap-1">
+                                      {item.bullishAgents.map((name, i) => (
+                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-red-50 text-red-600 rounded">
+                                          {name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {item.bearishAgents.length > 0 && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[11px] text-green-500 w-8">看跌</span>
+                                    <div className="flex-1 flex flex-wrap gap-1">
+                                      {item.bearishAgents.map((name, i) => (
+                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-green-50 text-green-600 rounded">
+                                          {name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                {item.neutralAgents.length > 0 && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[11px] text-gray-400 w-8">中性</span>
+                                    <div className="flex-1 flex flex-wrap gap-1">
+                                      {item.neutralAgents.map((name, i) => (
+                                        <span key={i} className="text-[11px] px-1.5 py-0.5 bg-gray-50 text-gray-500 rounded">
+                                          {name}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                              {/* 情绪条 */}
+                              <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden flex">
+                                {item.bullishAgents.length > 0 && (
+                                  <div
+                                    className="bg-red-400 h-full"
+                                    style={{ width: `${(item.bullishAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }}
+                                  />
+                                )}
+                                {item.neutralAgents.length > 0 && (
+                                  <div
+                                    className="bg-gray-400 h-full"
+                                    style={{ width: `${(item.neutralAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }}
+                                  />
+                                )}
+                                {item.bearishAgents.length > 0 && (
+                                  <div
+                                    className="bg-green-400 h-full"
+                                    style={{ width: `${(item.bearishAgents.length / (item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length)) * 100}%` }}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </>
                   );
                 })()}

@@ -52,6 +52,7 @@ export const roundSummarySystemPromptTemplate = `你是一个"多 Agent 话题�
 - insights: string[] - 关键洞察（3-5 条，每条控制在 200 字以内）
 - openQuestions: string[] - 未解决的开放性问题（2-4 条，每条控制在 200 字以内）
 - nextRoundSuggestions: string[] - 下一轮讨论建议（2-3 条，每条控制在 200 字以内）
+- sentimentSummary: Array<{ stock: string, bullishAgents: string[], bearishAgents: string[], neutralAgents: string[], overallSentiment: "bullish"|"bearish"|"neutral"|"divided" }> - 如果话题涉及具体股票/公司标的，汇总每个 Agent 对该标的的看涨/看跌/中性情绪判断。overallSentiment 根据多数 Agent 的情绪倾向综合判断：bullish=多数看涨，bearish=多数看跌，neutral=多数中性，divided=分歧明显。如果话题不涉及具体标的，则为空数组 []。
 
 请严格按照上述 JSON 结构输出，不要添加任何额外的字段或说明文字。`;
 
@@ -82,6 +83,7 @@ export const roundSummaryUserPromptTemplate = `请对第 {{round_index}} 轮讨�
 5. 关键洞察
 6. 未解决的开放性问题
 7. 下一轮讨论的建议方向
+8. **情绪汇总**：如果话题涉及具体的股票/公司标的，请汇总每个 Agent 对该标的是看涨、看跌还是中性，并给出整体情绪判断
 
 请严格按照 System Prompt 中指定的 JSON 结构输出，不要输出任何解释说明。`;
 
@@ -145,4 +147,18 @@ export interface RoundSummary {
   
   /** 下一轮讨论建议（2-3 条） */
   nextRoundSuggestions: string[];
+
+  /** 各标的情绪汇总（如果话题涉及具体股票/公司） */
+  sentimentSummary?: Array<{
+    /** 股票/公司名称 */
+    stock: string;
+    /** 看涨的 Agent 名称列表 */
+    bullishAgents: string[];
+    /** 看跌的 Agent 名称列表 */
+    bearishAgents: string[];
+    /** 中性的 Agent 名称列表 */
+    neutralAgents: string[];
+    /** 整体情绪判断 */
+    overallSentiment: 'bullish' | 'bearish' | 'neutral' | 'divided';
+  }>;
 }

@@ -6,6 +6,18 @@ import type { Discussion } from '@/types';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
 
+// 历史话题类型
+interface HistoryTopic {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  discussion: Discussion;
+}
+
+// localStorage key（与 HistoryTopicsDrawer 和 DiscussionPage 保持一致）
+const HISTORY_TOPICS_KEY = 'multiagent_history_topics';
+
 type WelcomePageProps = {
   onCreateDiscussion: (discussion: Discussion) => void;
 };
@@ -14,27 +26,27 @@ type WelcomePageProps = {
 const DEFAULT_AGENTS = [
   {
     id: 'macro_economist' as AgentId,
-    name: '宏观经济学家',
-    color: 'bg-emerald-500',
-    icon: '✨',
+    name: '涨停敢死队长',
+    color: 'bg-red-500',
+    icon: '🔥',
   },
   {
     id: 'finance_expert' as AgentId,
-    name: '金融领域专家',
-    color: 'bg-orange-500',
-    icon: '👂',
+    name: '价值投资苦行僧',
+    color: 'bg-emerald-600',
+    icon: '🧘',
   },
   {
     id: 'senior_stock_practitioner' as AgentId,
-    name: '资深股票从业人员',
-    color: 'bg-gray-800',
-    icon: '⚡',
+    name: '量化狙击手',
+    color: 'bg-indigo-600',
+    icon: '📊',
   },
   {
     id: 'veteran_stock_tycoon' as AgentId,
-    name: '成功多年的股票大亨',
-    color: 'bg-blue-500',
-    icon: '◆',
+    name: '草根股神老王',
+    color: 'bg-amber-600',
+    icon: '🎣',
   },
 ];
 
@@ -84,10 +96,6 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
       const limitedTopics = topics.slice(0, 50);
       const sortedTopics = limitedTopics.sort((a, b) => b.updatedAt - a.updatedAt);
       localStorage.setItem(HISTORY_TOPICS_KEY, JSON.stringify(sortedTopics));
-      // 使用 setTimeout 避免在渲染过程中更新状态
-      setTimeout(() => {
-        setHistoryTopics(sortedTopics);
-      }, 0);
     } catch (error) {
       console.error('[WelcomePage] Error saving history topic:', error);
     }
