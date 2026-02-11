@@ -12,17 +12,31 @@ Business context:
   - 金融领域专家
   - 资深股票从业人员
   - 成功多年的股票大亨
-- For each round:
-  - Generate each Agent's main speech (system prompt = the Agent role; user prompt = per-round speech template).
-  - Generate each Agent's review/critique of others (user prompt = per-round review template).
+
+Discussion flow:
+- **Round 1 (First Round)**:
+  - Each Agent generates their main speech about the topic (system prompt = the Agent role; user prompt = first round speech template).
+  - No reviews/critiques in the first round.
   - Generate a structured JSON round summary (consensus, conflicts, insights, nextRoundSuggestions).
+- **Round 2+ (Subsequent Rounds)**:
+  - Each Agent must analyze disagreements from the previous round and respond directly to another Agent.
+  - Each Agent's speech must:
+    1. Find at least one Agent with conflicting views from the previous round
+    2. Explicitly @mention that Agent (format: @Agent名称)
+    3. Summarize the disagreement point
+    4. Respond to that disagreement point (can counter or acknowledge)
+    5. Be limited to 200 characters
+    6. **Must NOT express overall views on the topic** - only respond to the disagreement
+  - System prompt emphasizes: "找出与你观点有分歧的其他Agent，并明确@对方，总结分歧点，然后针对该分歧观点进行回应"
+  - Generate a structured JSON round summary after all Agents have spoken.
 - At the end, generate a session summary based on all rounds.
 
 Existing prompts:
 - Agent role system prompts are defined in /prompts/agents.ts as AgentConfig.systemPrompt.
-- Per-round speech and review user prompts will be defined in /prompts/roundAgentPrompts.ts.
-- Round summary prompts will be defined in /prompts/roundSummaryPrompts.ts.
-- Session summary prompts will be defined in /prompts/sessionSummaryPrompts.ts.
+- First round speech and review user prompts are defined in /prompts/roundAgentPrompts.ts.
+- Subsequent rounds (Round 2+) speech user prompts are defined in /prompts/subsequentRoundAgentPrompts.ts (uses disagreement analysis format).
+- Round summary prompts are defined in /prompts/roundSummaryPrompts.ts.
+- Session summary prompts are defined in /prompts/sessionSummaryPrompts.ts.
 
 What you should do when I ask for code:
 - Use the existing prompt templates and types from /prompts/*.
@@ -31,5 +45,6 @@ What you should do when I ask for code:
   - Call an abstract LLM client (e.g. LLMClient.generate(system, user)).
   - Parse JSON outputs robustly (try/catch + fallback).
 - Keep everything strongly typed with TypeScript, avoid any.
+- For Round 2+ speeches, ensure the prompt enforces @mentioning and disagreement-focused responses.
 
 Only work on this repository, and assume it is a Next.js TypeScript project.

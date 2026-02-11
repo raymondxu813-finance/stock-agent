@@ -35,14 +35,17 @@ export async function POST(request: NextRequest) {
     }
 
     // 构造发言和互评文本（进一步缩短以提升速度）
-    const truncateText = (text: string, maxLength: number = 2000): string => {
-      if (text.length <= maxLength) return text;
-      return text.substring(0, maxLength) + '\n\n[内容已截断]';
+    const truncateText = (text: string | undefined | null, maxLength: number = 2000): string => {
+      // 确保 text 是字符串类型
+      const textStr = String(text || '');
+      if (textStr.length <= maxLength) return textStr;
+      return textStr.substring(0, maxLength) + '\n\n[内容已截断]';
     };
 
     const currentRoundAgentsSpeeches = agentsSpeeches
       .map((s: any) => {
-        const truncatedSpeech = truncateText(s.speech, 500);
+        const speechText = s.speech || '';
+        const truncatedSpeech = truncateText(speechText, 500);
         return `【${s.agentName}（${s.agentId}）】\n${truncatedSpeech}`;
       })
       .join('\n\n');
@@ -51,7 +54,8 @@ export async function POST(request: NextRequest) {
     const currentRoundAgentsReviews = agentsReviews && agentsReviews.length > 0
       ? agentsReviews
           .map((r: any) => {
-            const truncatedReview = truncateText(r.review, 400);
+            const reviewText = r.review || '';
+            const truncatedReview = truncateText(reviewText, 400);
             return `【${r.agentName}（${r.agentId}）的互评】\n${truncatedReview}`;
           })
           .join('\n\n')
@@ -69,6 +73,15 @@ export async function POST(request: NextRequest) {
       current_round_agents_speeches: currentRoundAgentsSpeeches,
       current_round_agents_reviews: currentRoundAgentsReviews,
     });
+    
+    // 保存主持人prompts到session（用于持久化）
+    if (!session.moderatorPrompts) {
+      session.moderatorPrompts = {};
+    }
+    session.moderatorPrompts[roundIndex] = {
+      systemPrompt,
+      userPrompt,
+    };
 
     // 创建 ReadableStream 用于流式输出
     let isCancelled = false;
@@ -131,12 +144,16 @@ export async function POST(request: NextRequest) {
           // 保存总结到 session
           session.rounds.push(roundSummary);
           
-          // 发送完成信息和解析后的总结
+          // 发送完成信息和解析后的总结（包含主持人prompts）
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ 
             type: 'done', 
             roundIndex,
             roundSummary,
-            session 
+            session,
+            moderatorPrompts: {
+              systemPrompt,
+              userPrompt,
+            }
           })}\n\n`))) {
             return;
           }

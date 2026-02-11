@@ -1,9 +1,21 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Menu, Edit3, ChevronDown, ChevronUp, ArrowDown, X } from 'lucide-react';
+import { Menu, Edit3, ChevronDown, ArrowDown, X, FileText, Send } from 'lucide-react';
 import type { Discussion, AgentComment, RoundData } from '@/types';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
+
+// 气泡背景色映射：根据agent的color类名返回对应的淡色背景
+const getBubbleBgColor = (agentColor: string): string => {
+  if (agentColor.includes('emerald')) return 'bg-emerald-50';
+  if (agentColor.includes('orange')) return 'bg-orange-50';
+  if (agentColor.includes('gray-800') || agentColor.includes('gray-900')) return 'bg-slate-100';
+  if (agentColor.includes('blue')) return 'bg-blue-50';
+  if (agentColor.includes('purple')) return 'bg-purple-50';
+  if (agentColor.includes('red')) return 'bg-red-50';
+  if (agentColor.includes('indigo')) return 'bg-indigo-50';
+  return 'bg-gray-50';
+};
 
 // localStorage key
 const HISTORY_TOPICS_KEY = 'multiagent_history_topics';
@@ -61,6 +73,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const [currentSummaryText, setCurrentSummaryText] = useState<string>(''); // 用于流式显示总结
   const [isDrawerOpen, setIsDrawerOpen] = useState(false); // 历史话题抽屉状态
   const [showScrollToBottom, setShowScrollToBottom] = useState(false); // 是否显示"回到底部"按钮
+  const [showPromptsModal, setShowPromptsModal] = useState(false); // 是否显示prompts弹窗
+  const [currentRoundPrompts, setCurrentRoundPrompts] = useState<{
+    agents: Array<{ agentId: string; agentName: string; systemPrompt: string; userPrompt: string }>;
+    moderator?: { systemPrompt: string; userPrompt: string };
+  } | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
   const hasStartedRef = useRef(false);
@@ -227,6 +244,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     setIsLoading(true);
     setCurrentRoundStatus('speech');
     setCurrentRoundIndex(1);
+    // 重置prompts收集
+    currentRoundPromptsRef.current = { agents: [] };
 
     // 初始化评论状态
     const initialComments = new Map<string, AgentComment>();
@@ -234,7 +253,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       initialComments.set(agent.id, {
         agentId: agent.id,
         agentName: agent.name,
-        agentColor: agent.color,
+        agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
         content: '正在发言...',
         expanded: false,
       });
@@ -260,23 +279,33 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         const speech = await handleStreamResponse(
           response,
           agent.id,
-          agent.name,
-          agent.color,
+          agent.name || 'Unknown Agent', // 防止undefined
+          agent.color || 'bg-gray-500', // 默认颜色，防止undefined
           (content) => {
             setCurrentRoundComments(prev => {
               const newMap = new Map(prev);
               const existing = newMap.get(agent.id);
               newMap.set(agent.id, {
                 agentId: agent.id,
-                agentName: agent.name,
-                agentColor: agent.color,
-                content: content,
+                agentName: agent.name || 'Unknown Agent', // 防止undefined
+                agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
+                content: content || '', // 防止undefined
                 expanded: existing?.expanded ?? false,
               });
               return newMap;
             });
           }
         );
+
+        // 保存agent的prompts
+        if (speech.systemPrompt && speech.userPrompt) {
+          currentRoundPromptsRef.current.agents.push({
+            agentId: agent.id,
+            agentName: agent.name || 'Unknown Agent',
+            systemPrompt: speech.systemPrompt,
+            userPrompt: speech.userPrompt,
+          });
+        }
 
         return { agentId: agent.id, agentName: agent.name, speech };
       });
@@ -339,6 +368,13 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 updatedSession = data.session;
                 // 确保最终文本已设置
                 setCurrentSummaryText(data.roundSummary?.overallSummary || summaryBuffer);
+                // 保存主持人的prompts
+                if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
+                  currentRoundPromptsRef.current.moderator = {
+                    systemPrompt: data.moderatorPrompts.systemPrompt,
+                    userPrompt: data.moderatorPrompts.userPrompt,
+                  };
+                }
               } else if (data.type === 'error') {
                 throw new Error(data.error);
               }
@@ -359,12 +395,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         
         const moderatorAnalysis = {
           round: roundSummary.roundIndex || 1,
-          consensusLevel: roundSummary.consensus && roundSummary.consensus.length > 0
-            ? Math.round(
-                (roundSummary.consensus.reduce((sum: number, c: any) => sum + (c.supportCount || 0), 0) /
-                  (roundSummary.consensus.length * discussion.agents.length)) * 100
-              ) || 60
-            : 60,
+          consensusLevel: roundSummary.consensusLevel ?? 50,
           summary: currentSummaryText || roundSummary.overallSummary || '本轮讨论已完成',
           newPoints: (roundSummary.insights && roundSummary.insights.length > 0) 
             ? roundSummary.insights.slice(0, 2) 
@@ -397,6 +428,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           roundIndex: roundSummary.roundIndex || 1,
           comments: finalComments,
           moderatorAnalysis,
+          prompts: {
+            agents: [...currentRoundPromptsRef.current.agents],
+            moderator: currentRoundPromptsRef.current.moderator,
+          },
         };
 
         // 使用 setTimeout 将父组件更新推迟到下一个事件循环，避免在渲染过程中更新
@@ -495,22 +530,33 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     return lines.slice(0, 3).join('\n') + (lines.length > 3 ? '...' : '');
   };
 
+  // 存储当前轮次的prompts
+  const currentRoundPromptsRef = useRef<{
+    agents: Array<{ agentId: string; agentName: string; systemPrompt: string; userPrompt: string }>;
+    moderator?: { systemPrompt: string; userPrompt: string };
+  }>({ agents: [] });
+
   // 处理流式响应的辅助函数
   const handleStreamResponse = async (
     response: Response,
     agentId: string,
     agentName: string,
     agentColor: string,
-    updateContent: (content: string) => void
-  ): Promise<string> => {
+    updateContent: (content: string, targetAgentId?: string, targetAgentName?: string, systemPrompt?: string, userPrompt?: string) => void
+  ): Promise<{ content: string; targetAgentId?: string; targetAgentName?: string; systemPrompt?: string; userPrompt?: string }> => {
     if (!response.ok) {
-      throw new Error(`Failed to get response for ${agentName}`);
+      const agentNameSafe = agentName || 'Unknown Agent';
+      throw new Error(`Failed to get response for ${agentNameSafe}`);
     }
 
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let fullContent = '';
+    let targetAgentId: string | undefined;
+    let targetAgentName: string | undefined;
+    let savedSystemPrompt: string | undefined;
+    let savedUserPrompt: string | undefined;
 
     if (!reader) {
       throw new Error('Failed to get response stream');
@@ -525,27 +571,47 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       buffer = lines.pop() || '';
 
       for (const line of lines) {
+        if (!line || typeof line !== 'string') continue; // 跳过无效的行
         if (line.startsWith('data: ')) {
           try {
-            const data = JSON.parse(line.slice(6));
+            const jsonStr = line.slice(6).trim();
+            if (!jsonStr) continue; // 跳过空的数据行
+            
+            const data = JSON.parse(jsonStr);
+            
+            if (!data || typeof data !== 'object') continue; // 跳过无效的数据对象
             
             if (data.type === 'chunk') {
-              fullContent += data.content;
+              const chunkContent = data.content || '';
+              fullContent += chunkContent;
               // 实时更新 UI（打字机效果）
-              updateContent(fullContent);
+              updateContent(fullContent, targetAgentId, targetAgentName);
             } else if (data.type === 'done') {
-              fullContent = data.speech || data.review || fullContent;
+              fullContent = data.speech || data.review || fullContent || '';
+              // 保存目标agent信息（如果有）
+              if (data.targetAgentId && data.targetAgentName) {
+                targetAgentId = String(data.targetAgentId);
+                targetAgentName = String(data.targetAgentName);
+              }
+              // 保存prompts（如果有）
+              if (data.systemPrompt && data.userPrompt) {
+                savedSystemPrompt = String(data.systemPrompt);
+                savedUserPrompt = String(data.userPrompt);
+              }
             } else if (data.type === 'error') {
-              throw new Error(data.error);
+              const errorMessage = data.error ? String(data.error) : 'Unknown error occurred';
+              throw new Error(errorMessage);
             }
           } catch (e) {
             console.error('Error parsing SSE data:', e);
+            console.error('Problematic line:', line);
+            // 不抛出错误，继续处理下一行
           }
         }
       }
     }
 
-    return fullContent;
+    return { content: fullContent, targetAgentId, targetAgentName, systemPrompt: savedSystemPrompt, userPrompt: savedUserPrompt };
   };
 
   // 开始新一轮讨论（瀑布流方式）
@@ -562,7 +628,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       initialComments.set(agent.id, {
         agentId: agent.id,
         agentName: agent.name,
-        agentColor: agent.color,
+        agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
         content: '正在发言...',
         expanded: false,
       });
@@ -572,6 +638,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     try {
       const sessionData = discussion.sessionData;
       
+      // 获取上一轮的原始发言数据（用于后续轮次的辩论prompt）
+      const previousRoundData = rounds.length > 0 ? rounds[rounds.length - 1] : null;
+      const previousRoundComments = previousRoundData?.comments?.map(c => ({
+        agentId: c.agentId,
+        agentName: c.agentName,
+        content: c.content,
+      })) || [];
+
       // 步骤 1: 并行请求所有 Agent 的发言（流式）
       const speechPromises = discussion.agents.map(async (agent) => {
         const response = await fetch('/api/agents/speech/stream', {
@@ -582,31 +656,50 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             agentId: agent.id,
             roundIndex: roundIndex,
             sessionData: sessionData,
+            previousRoundComments: previousRoundComments,
           }),
         });
 
-        const speech = await handleStreamResponse(
+        const speechResult = await handleStreamResponse(
           response,
           agent.id,
-          agent.name,
-          agent.color,
-          (content) => {
+          agent.name || 'Unknown Agent', // 防止undefined
+          agent.color || 'bg-gray-500', // 默认颜色，防止undefined
+          (content, targetAgentId, targetAgentName) => {
             setCurrentRoundComments(prev => {
               const newMap = new Map(prev);
               const existing = newMap.get(agent.id);
               newMap.set(agent.id, {
                 agentId: agent.id,
-                agentName: agent.name,
-                agentColor: agent.color,
-                content: content,
+                agentName: agent.name || 'Unknown Agent', // 防止undefined
+                agentColor: agent.color || 'bg-gray-500', // 默认颜色，防止undefined
+                content: content || '', // 防止undefined
                 expanded: existing?.expanded ?? false,
+                targetAgentId: targetAgentId || existing?.targetAgentId,
+                targetAgentName: targetAgentName || existing?.targetAgentName,
               });
               return newMap;
             });
           }
         );
 
-        return { agentId: agent.id, agentName: agent.name, speech };
+        // 保存agent的prompts
+        if (speechResult.systemPrompt && speechResult.userPrompt) {
+          currentRoundPromptsRef.current.agents.push({
+            agentId: agent.id,
+            agentName: agent.name || 'Unknown Agent',
+            systemPrompt: speechResult.systemPrompt,
+            userPrompt: speechResult.userPrompt,
+          });
+        }
+
+        return { 
+          agentId: agent.id, 
+          agentName: agent.name, 
+          speech: speechResult.content,
+          targetAgentId: speechResult.targetAgentId,
+          targetAgentName: speechResult.targetAgentName,
+        };
       });
 
       const speeches = await Promise.all(speechPromises);
@@ -640,11 +733,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           }),
         });
 
-        const review = await handleStreamResponse(
+        const reviewResult = await handleStreamResponse(
           response,
           agent.id,
-          agent.name,
-          agent.color,
+          agent.name || 'Unknown Agent', // 防止undefined
+          agent.color || 'bg-gray-500', // 默认颜色，防止undefined
           (content) => {
             // 互评暂时不更新 UI，只在完成后更新
             // 如果需要实时显示互评，可以在这里添加更新逻辑
@@ -654,7 +747,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         return { 
           agentId: agent.id, 
           agentName: agent.name, 
-          review,
+          review: reviewResult.content,
           targetAgentId: targetAgent.id,
           targetAgentName: targetAgent.name,
         };
@@ -740,12 +833,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         
         const moderatorAnalysis = {
           round: roundSummary.roundIndex || roundIndex,
-          consensusLevel: roundSummary.consensus && roundSummary.consensus.length > 0
-            ? Math.round(
-                (roundSummary.consensus.reduce((sum: number, c: any) => sum + (c.supportCount || 0), 0) /
-                  (roundSummary.consensus.length * discussion.agents.length)) * 100
-              ) || 60
-            : 60,
+          consensusLevel: roundSummary.consensusLevel ?? 50,
           summary: currentSummaryText || roundSummary.overallSummary || '本轮讨论已完成',
           newPoints: (roundSummary.insights && roundSummary.insights.length > 0) 
             ? roundSummary.insights.slice(0, 2) 
@@ -778,6 +866,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           roundIndex: roundSummary.roundIndex || roundIndex,
           comments: finalComments,
           moderatorAnalysis,
+          prompts: {
+            agents: [...currentRoundPromptsRef.current.agents],
+            moderator: currentRoundPromptsRef.current.moderator,
+          },
         };
 
         // 追加新轮次到现有轮次列表
@@ -823,7 +915,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#f5f5f5] relative">
+    <div className="h-full flex flex-col bg-[#ededed] relative">
       {/* 历史话题抽屉 - 复用共享组件 */}
       <HistoryTopicsDrawer
         isOpen={isDrawerOpen}
@@ -832,223 +924,107 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         isLoading={isLoading}
       />
 
-      {/* Header */}
-      <div className="bg-white px-4 py-3 flex items-center border-b border-gray-200 relative z-10">
+      {/* Header - 群聊风格 */}
+      <div className="bg-white px-4 py-2.5 flex items-center border-b border-gray-200 relative z-10">
         <button
           onClick={() => setIsDrawerOpen(true)}
           className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors"
         >
-          <Menu className="w-6 h-6 text-gray-900" />
+          <Menu className="w-5 h-5 text-gray-700" />
         </button>
         <div className="flex-1 text-center">
-          <h1 className="text-lg font-medium text-gray-900">{discussion.title}</h1>
+          <h1 className="text-base font-medium text-gray-900 leading-tight">{discussion.title}</h1>
+          <p className="text-xs text-gray-400">{discussion.agents.length}位专家讨论中</p>
         </div>
         <button
           onClick={onBack}
           className="p-2 -mr-2 hover:bg-gray-100 rounded-full transition-colors"
         >
-          <Edit3 className="w-6 h-6 text-gray-900" />
+          <Edit3 className="w-5 h-5 text-gray-700" />
         </button>
       </div>
 
       {/* Content */}
-      <div ref={contentRef} className="flex-1 overflow-y-auto pb-32" style={{ maxHeight: 'calc(100vh - 120px)' }}>
-        <div className="p-4 space-y-3">
-          {/* Session Header - 吸顶效果，点击打开总结弹窗 */}
+      <div ref={contentRef} className="flex-1 overflow-y-auto pb-24" style={{ maxHeight: 'calc(100vh - 110px)' }}>
+        <div className="px-4 pt-2 pb-4 space-y-2">
+          {/* Session Header - 群公告风格窄条 */}
           <div 
-            className="sticky top-4 bg-indigo-500 rounded-2xl px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-indigo-600 transition-colors z-20"
+            className="sticky top-0 z-20 flex justify-center py-1.5"
             onClick={() => setShowSummary(true)}
           >
-            <div className="w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+            <div className="bg-white/80 backdrop-blur-sm rounded-full px-4 py-1.5 flex items-center gap-2 cursor-pointer hover:bg-white/90 transition-colors shadow-sm border border-gray-200/50">
+              <svg className="w-3.5 h-3.5 text-indigo-500" fill="currentColor" viewBox="0 0 20 20">
                 <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
                 <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
               </svg>
+              <span className="text-xs text-gray-600 max-w-[200px] truncate">{discussion.title}</span>
+              <span className="text-xs text-gray-400">·</span>
+              <span className="text-xs text-indigo-500">第{rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : 1}轮</span>
+              <ChevronDown className="w-3 h-3 text-gray-400" />
             </div>
-            <div className="flex-1">
-              <h3 className="text-white text-sm mb-0.5">{discussion.title}</h3>
-              <div className="flex items-center gap-1 text-xs text-indigo-200">
-                <span>讨论中</span>
-                <span>•</span>
-                <span>v{rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis?.round || 1}</span>
-              </div>
-            </div>
-            <ChevronDown className="w-5 h-5 text-white" />
           </div>
 
-          {/* 多轮讨论瀑布流 */}
+          {/* 多轮讨论瀑布流 - 群聊风格 */}
           {rounds.map((round, roundIdx) => (
             <div key={`round-${round.roundIndex}-${roundIdx}`} className="space-y-3">
-              {/* 轮次分隔 */}
-              {roundIdx > 0 && (
-                <div className="flex items-center gap-2 py-2">
-                  <div className="flex-1 h-px bg-gray-200"></div>
-                  <span className="text-xs text-gray-400 px-2">第 {round.roundIndex} 轮</span>
-                  <div className="flex-1 h-px bg-gray-200"></div>
-                </div>
-              )}
+              {/* 轮次分隔 - 居中胶囊 */}
+              <div className="flex justify-center py-2">
+                <span className="bg-gray-200/80 text-gray-500 text-xs px-3 py-1 rounded-full">
+                  第 {round.roundIndex} 轮讨论
+                </span>
+              </div>
 
-              {/* Agent Comments */}
+              {/* Agent Comments - 群聊气泡 */}
               {round.comments.map((comment) => (
-                <div key={`${round.roundIndex}-${comment.agentId}`} className="bg-white rounded-2xl overflow-hidden">
-                  <div className="p-4">
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className={`w-10 h-10 ${comment.agentColor} rounded-full flex items-center justify-center text-white`}>
-                        {comment.agentName[0]}
+                <div key={`${round.roundIndex}-${comment.agentId}`} className="flex items-start gap-2.5">
+                  {/* 头像 */}
+                  <div className={`w-9 h-9 ${comment.agentColor} rounded-lg flex-shrink-0 flex items-center justify-center text-white text-sm font-medium shadow-sm`}>
+                    {comment.agentName[0]}
+                  </div>
+                  {/* 名称 + 气泡 */}
+                  <div className="max-w-[85%] min-w-0">
+                    <span className="text-xs text-gray-500 mb-1 block">{comment.agentName}</span>
+                    <div className={`${getBubbleBgColor(comment.agentColor)} rounded-2xl rounded-tl-md px-3.5 py-2.5 shadow-sm`}>
+                      <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-words">
+                        {comment.content}
                       </div>
-                      <span className="text-base text-gray-900">{comment.agentName}</span>
-                    </div>
-                    
-                    <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
-                      {(comment.expanded ?? false) ? comment.content : getPreviewText(comment.content)}
                     </div>
                   </div>
-                  
-                  {comment.content.split('\n').filter(l => l.trim()).length > 3 && (
-                    <button
-                      onClick={() => toggleExpanded(round.roundIndex, comment.agentId)}
-                      className="w-full px-4 py-2.5 bg-gray-50 border-t border-gray-100 flex items-center justify-center gap-1 text-sm text-blue-600"
-                    >
-                      {(comment.expanded ?? false) ? (
-                        <>
-                          <span>收起</span>
-                          <ChevronUp className="w-4 h-4" />
-                        </>
-                      ) : (
-                        <>
-                          <span>展开全部</span>
-                          <ChevronDown className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  )}
                 </div>
               ))}
 
-              {/* Moderator Analysis */}
-              <div className={`bg-gradient-to-br from-yellow-50 to-orange-50 rounded-2xl border-2 border-yellow-400 overflow-hidden`}>
-                <div className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 bg-indigo-500 rounded-full flex items-center justify-center">
-                        <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
-                        </svg>
-                      </div>
-                      <div>
-                        <h3 className="text-sm text-gray-900">主持人分析</h3>
-                        <p className="text-xs text-gray-500">第 {round.roundIndex} 轮</p>
-                      </div>
+              {/* Moderator Analysis - 居中系统消息 */}
+              <div className="flex justify-center py-1">
+                <div 
+                  className="max-w-[85%] bg-white/90 backdrop-blur-sm rounded-xl px-4 py-3 shadow-sm border border-gray-100 cursor-pointer hover:bg-white transition-colors"
+                  onClick={() => setShowSummary(true)}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="w-5 h-5 bg-indigo-500 rounded-full flex items-center justify-center flex-shrink-0">
+                      <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
+                      </svg>
                     </div>
-                    <button
-                      onClick={() => setShowSummary(true)}
-                      className="px-3 py-1.5 bg-green-500 text-white text-xs rounded-lg"
-                    >
-                      有进展
-                    </button>
-                    <button
-                      onClick={() => toggleSummaryCollapsed(round.roundIndex)}
-                      className="ml-2"
-                    >
-                      {collapsedSummary[round.roundIndex] ? (
-                        <ChevronDown className="w-5 h-5 text-gray-600" />
-                      ) : (
-                        <ChevronUp className="w-5 h-5 text-gray-600" />
-                      )}
-                    </button>
+                    <span className="text-xs font-medium text-gray-700">第{round.roundIndex}轮总结</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full text-white ${
+                      round.moderatorAnalysis.consensusLevel >= 80 ? 'bg-green-500' :
+                      round.moderatorAnalysis.consensusLevel >= 60 ? 'bg-blue-500' :
+                      round.moderatorAnalysis.consensusLevel >= 40 ? 'bg-yellow-500' :
+                      'bg-red-500'
+                    }`}>
+                      {round.moderatorAnalysis.consensusLevel >= 80 ? '高度共识' :
+                       round.moderatorAnalysis.consensusLevel >= 60 ? '有进展' :
+                       round.moderatorAnalysis.consensusLevel >= 40 ? '有分歧' :
+                       '分歧较大'} {round.moderatorAnalysis.consensusLevel}%
+                    </span>
                   </div>
-
-                  {!collapsedSummary[round.roundIndex] && (
-                    <>
-                      <div className="mb-4">
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-xs text-gray-600">共识度</span>
-                          <span className="text-xl text-orange-600">{round.moderatorAnalysis.consensusLevel}%</span>
-                        </div>
-                        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-gradient-to-r from-yellow-400 to-orange-500"
-                            style={{ width: `${round.moderatorAnalysis.consensusLevel}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="mb-4">
-                        <div className="flex items-start gap-2 text-sm text-gray-700 leading-relaxed">
-                          <span className="text-gray-400 mt-0.5">≡</span>
-                          <p>{round.moderatorAnalysis.summary}</p>
-                        </div>
-                      </div>
-
-                      {/* New Points */}
-                      <div className="mb-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-yellow-600">●</span>
-                          <h4 className="text-sm text-gray-900">本轮新观点</h4>
-                        </div>
-                        <div className="space-y-1.5">
-                          {round.moderatorAnalysis.newPoints.map((point, index) => (
-                            <div key={index} className="flex items-start gap-2 text-xs text-gray-600">
-                              <span className="text-orange-400 mt-0.5">+</span>
-                              <span>{point}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Consensus */}
-                      <div className="mb-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-green-600">✓</span>
-                          <h4 className="text-sm text-gray-900">已达成共识</h4>
-                        </div>
-                        <div className="space-y-2">
-                          {round.moderatorAnalysis.consensus.map((item, index) => (
-                            <div key={index} className="flex items-start gap-2">
-                              <span className="text-green-500 mt-0.5">•</span>
-                              <span className="flex-1 text-xs text-gray-700">{item.content}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Disagreements Preview */}
-                      <div>
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-orange-600">⚡</span>
-                          <h4 className="text-sm text-gray-900">仍在讨论</h4>
-                        </div>
-                        <div className="space-y-2">
-                          {round.moderatorAnalysis.disagreements.map((item, index) => (
-                            <button
-                              key={index}
-                              onClick={() => setShowSummary(true)}
-                              className="w-full bg-white rounded-lg p-3 text-left"
-                            >
-                              <div className="flex items-center justify-between mb-2">
-                                <h5 className="text-sm text-gray-900 flex-1">{item.topic}</h5>
-                                <ChevronDown className="w-4 h-4 text-gray-400" />
-                              </div>
-                              <p className="text-xs text-gray-500 mb-2">{item.description}</p>
-                              <div className="flex items-center gap-2">
-                                <div className="flex -space-x-2">
-                                  {item.supportAgents.slice(0, 2).map((agent, i) => (
-                                    <div
-                                      key={i}
-                                      className={`w-6 h-6 ${agent.color} rounded-full border-2 border-white`}
-                                    />
-                                  ))}
-                                </div>
-                                {item.supportAgents.length > 2 && (
-                                  <span className="text-xs text-gray-500">+{item.supportAgents.length - 2}</span>
-                                )}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  )}
+                  <p className="text-xs text-gray-600 leading-relaxed line-clamp-2 mb-2">
+                    {round.moderatorAnalysis.summary}
+                  </p>
+                  <div className="flex items-center gap-1 text-xs text-indigo-500">
+                    <span>查看完整分析</span>
+                    <ChevronDown className="w-3 h-3" />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1059,7 +1035,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       {/* "回到底部"按钮 - 悬浮在底部栏上方 */}
       {showScrollToBottom && (
         <div 
-          className="fixed bottom-20 left-1/2 pointer-events-auto"
+          className="fixed bottom-16 left-1/2 pointer-events-auto"
           style={{
             transform: 'translateX(-50%)',
             zIndex: 9999,
@@ -1067,12 +1043,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         >
           <button
             onClick={scrollToBottom}
-            className="px-4 py-3 bg-indigo-500 text-white rounded-full flex items-center justify-center gap-2 text-sm shadow-lg hover:bg-indigo-600 transition-all duration-300"
-            style={{
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-            }}
+            className="px-3 py-1.5 bg-black/60 text-white rounded-full flex items-center justify-center gap-1.5 text-xs shadow-lg hover:bg-black/70 transition-all duration-300 backdrop-blur-sm"
           >
-            <ArrowDown className="w-4 h-4" />
+            <ArrowDown className="w-3.5 h-3.5" />
             <span>回到底部</span>
           </button>
         </div>
@@ -1092,16 +1065,106 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         }
       `}</style>
 
-      {/* Bottom Actions */}
-      <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-4 flex items-center gap-3 z-30">
+      {/* Bottom Actions - 轻盈发送风格 */}
+      <div className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-3 py-2.5 flex items-center gap-2 z-30">
+        <button 
+          onClick={() => {
+            const currentRound = rounds[rounds.length - 1];
+            if (currentRound?.prompts) {
+              setCurrentRoundPrompts(currentRound.prompts);
+              setShowPromptsModal(true);
+            } else {
+              alert('当前轮次暂无prompts数据');
+            }
+          }}
+          className="p-2.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+          title="查看 Prompts"
+        >
+          <FileText className="w-5 h-5" />
+        </button>
+        <div className="flex-1 bg-gray-100 rounded-full px-4 py-2 text-sm text-gray-400 select-none">
+          {isLoading ? '专家们正在讨论中...' : '点击右侧按钮继续下一轮讨论'}
+        </div>
         <button 
           onClick={handleContinueDiscussion}
           disabled={isLoading}
-          className="flex-1 bg-indigo-500 text-white py-3 rounded-full text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-indigo-600 transition-colors shadow-md"
+          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+            isLoading 
+              ? 'bg-gray-200 text-gray-400 cursor-not-allowed animate-pulse' 
+              : 'bg-indigo-500 text-white hover:bg-indigo-600 shadow-md active:scale-95'
+          }`}
         >
-          {isLoading ? '讨论中...' : '继续讨论'}
+          <Send className="w-5 h-5" />
         </button>
       </div>
+
+      {/* Prompts Modal */}
+      {showPromptsModal && currentRoundPrompts && (
+        <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-[10001]" onClick={() => setShowPromptsModal(false)}>
+          <div className="w-full max-w-4xl max-h-[90vh] bg-white rounded-2xl overflow-hidden flex flex-col mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-gray-900">Prompts - 第 {rounds.length} 轮</h2>
+              <button
+                onClick={() => setShowPromptsModal(false)}
+                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              {/* Agent Prompts */}
+              <div className="mb-6">
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Agent Prompts</h3>
+                {currentRoundPrompts.agents.map((agentPrompt, index) => (
+                  <div key={index} className="mb-6 p-4 bg-gray-50 rounded-xl">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className={`w-3 h-3 ${discussion.agents.find(a => a.id === agentPrompt.agentId)?.color || 'bg-gray-500'} rounded-full`} />
+                      <h4 className="text-base font-medium text-gray-900">{agentPrompt.agentName}</h4>
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs font-medium text-gray-600 mb-1">System Prompt:</div>
+                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{agentPrompt.systemPrompt}</pre>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-gray-600 mb-1">User Prompt:</div>
+                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{agentPrompt.userPrompt}</pre>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              {/* Moderator Prompts */}
+              {currentRoundPrompts.moderator && (
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900 mb-4">Moderator Prompts</h3>
+                  <div className="p-4 bg-purple-50 rounded-xl">
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs font-medium text-gray-600 mb-1">System Prompt:</div>
+                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.systemPrompt}</pre>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-gray-600 mb-1">User Prompt:</div>
+                        <pre className="text-xs text-gray-800 bg-white p-3 rounded-lg border border-gray-200 overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.userPrompt}</pre>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setShowPromptsModal(false)}
+                className="w-full py-3 bg-indigo-500 text-white rounded-full text-sm font-medium hover:bg-indigo-600 transition-colors"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Summary Modal */}
       {showSummary && (

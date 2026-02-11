@@ -42,7 +42,7 @@ export interface LLMClient {
  * 使用 OpenAI API 进行真实的文本生成（DeepSeek）
  * 支持多 API KEY 负载均衡以提升速度
  */
-class OpenAILLMClient implements LLMClient {
+export class OpenAILLMClient implements LLMClient {
   private apiKeys: string[];
   private baseURL?: string;
   private model: string;
@@ -158,13 +158,15 @@ class OpenAILLMClient implements LLMClient {
       
       if (needsJSON) {
         // 检查是否已经包含 "json"（不区分大小写）
+        const systemPromptStr = systemPrompt || '';
+        const userPromptStr = userPrompt || '';
         const hasJsonKeyword = 
-          systemPrompt.toLowerCase().includes('json') ||
-          userPrompt.toLowerCase().includes('json');
+          systemPromptStr.toLowerCase().includes('json') ||
+          userPromptStr.toLowerCase().includes('json');
         
         if (!hasJsonKeyword) {
           // 在 userPrompt 末尾添加明确的 JSON 要求
-          finalUserPrompt = `${userPrompt}\n\n请以 JSON 格式输出结果。`;
+          finalUserPrompt = `${userPromptStr}\n\n请以 JSON 格式输出结果。`;
         }
       }
 

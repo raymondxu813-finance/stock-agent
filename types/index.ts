@@ -13,6 +13,8 @@ export type AgentComment = {
   agentColor: string;
   content: string;
   expanded: boolean;
+  targetAgentId?: string; // 针对回复的agent ID（第二轮及后续轮次使用）
+  targetAgentName?: string; // 针对回复的agent名称
 };
 
 export type ConsensusItem = {
@@ -38,6 +40,18 @@ export type RoundData = {
     newPoints: string[];
     consensus: ConsensusItem[];
     disagreements: DisagreementItem[];
+  };
+  prompts?: {
+    agents: Array<{
+      agentId: string;
+      agentName: string;
+      systemPrompt: string;
+      userPrompt: string;
+    }>;
+    moderator?: {
+      systemPrompt: string;
+      userPrompt: string;
+    };
   };
 };
 
