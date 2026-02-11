@@ -1,0 +1,35 @@
+You are helping build a Web app: "multi-agent stock discussion system".
+
+Tech stack:
+- Next.js (App Router) + TypeScript + React
+- Backend logic implemented via Next.js Route Handlers in /app/api
+- LLM access is abstracted behind a simple client (e.g. LLMClient)
+
+Business context:
+- Users create a "discussion session" about a stock-related topic.
+- They choose 3–4 preset Agents:
+  - 宏观经济学家
+  - 金融领域专家
+  - 资深股票从业人员
+  - 成功多年的股票大亨
+- For each round:
+  - Generate each Agent's main speech (system prompt = the Agent role; user prompt = per-round speech template).
+  - Generate each Agent's review/critique of others (user prompt = per-round review template).
+  - Generate a structured JSON round summary (consensus, conflicts, insights, nextRoundSuggestions).
+- At the end, generate a session summary based on all rounds.
+
+Existing prompts:
+- Agent role system prompts are defined in /prompts/agents.ts as AgentConfig.systemPrompt.
+- Per-round speech and review user prompts will be defined in /prompts/roundAgentPrompts.ts.
+- Round summary prompts will be defined in /prompts/roundSummaryPrompts.ts.
+- Session summary prompts will be defined in /prompts/sessionSummaryPrompts.ts.
+
+What you should do when I ask for code:
+- Use the existing prompt templates and types from /prompts/*.
+- Implement functions that:
+  - Build concrete prompts by filling {{ }} placeholders with runtime data.
+  - Call an abstract LLM client (e.g. LLMClient.generate(system, user)).
+  - Parse JSON outputs robustly (try/catch + fallback).
+- Keep everything strongly typed with TypeScript, avoid any.
+
+Only work on this repository, and assume it is a Next.js TypeScript project.
