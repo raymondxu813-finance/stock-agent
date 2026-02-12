@@ -2,9 +2,11 @@ import { NextRequest } from 'next/server';
 import { getSession, restoreSession } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildAgentTargetedReplyUserPrompt } from '@/prompts/builder';
-import { llmClient } from '@/lib/llmClient';
+import { executeAgentStream } from '@/lib/agentExecutor';
 import { parseSentimentBlock } from '@/lib/utils';
 import { SENTIMENT_SUFFIX_INSTRUCTION } from '@/prompts/agents';
+
+const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工具：查询实时股价、获取最新资讯、分析K线数据。主动用数据说话。';
 
 /**
  * 流式获取单个 Agent 的针对性回复（Server-Sent Events）
@@ -65,7 +67,7 @@ export async function POST(request: NextRequest) {
 2. 态度鲜明、语言犀利：有分歧就直接反驳，有共识就简短赞同并补充
 3. 不要重复阐述整体观点，聚焦在对具体Agent的回应上
 4. 150字以内，抓重点，说人话，像跟同行聊天一样自然
-5. 用中文输出，使用"我"的第一人称` + SENTIMENT_SUFFIX_INSTRUCTION;
+5. 用中文输出，使用"我"的第一人称` + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
 
     // 构建上下文文本
     let allSpeechesText = '';
@@ -159,16 +161,14 @@ export async function POST(request: NextRequest) {
             return;
           }
 
-          let fullContent = '';
-
-          // 调用流式生成
-          await llmClient.generateStream(systemPrompt, userPrompt, agentId, (chunk: string) => {
-            if (isCancelled) return;
-            fullContent += chunk;
-            if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`))) {
-              return;
-            }
-          });
+          // 使用支持工具调用的 agent 执行器
+          const { text: fullContent, toolCalls } = await executeAgentStream(
+            { systemPrompt, userPrompt, maxSteps: 3, temperature: 0.7 },
+            agentId,
+            agent.name,
+            encoder,
+            safeEnqueue,
+          );
 
           if (isCancelled) return;
 
@@ -190,7 +190,7 @@ export async function POST(request: NextRequest) {
           // 从回复内容中解析 [SENTIMENT] 块，分离正文和情绪数据
           const { cleanContent, sentiments } = parseSentimentBlock(fullContent);
 
-          // 发送完成信息
+          // 发送完成信息（包含工具调用记录）
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({
             type: 'done',
             agentId,
@@ -200,6 +200,7 @@ export async function POST(request: NextRequest) {
             targetAgentId,
             targetAgentName,
             sentiments: sentiments.length > 0 ? sentiments : undefined,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
             systemPrompt,
             userPrompt,
           })}\n\n`))) {

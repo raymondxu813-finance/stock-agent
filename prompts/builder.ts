@@ -275,3 +275,49 @@ export interface AgentDisagreementAnalysisPromptVars {
 export function buildAgentDisagreementAnalysisUserPrompt(vars: AgentDisagreementAnalysisPromptVars): string {
   return fillTemplate(agentDisagreementAnalysisUserPromptTemplate, vars as unknown as Record<string, string | number>);
 }
+
+// ======================== 用户提问场景 ========================
+
+import { userQuestionUserPromptTemplate, userQuestionSystemSuffix } from './userQuestionPrompts';
+
+/**
+ * 用户提问回复 User Prompt 构建函数参数类型
+ */
+export interface UserQuestionReplyPromptVars {
+  /** 讨论话题 */
+  topic: string;
+  /** 之前讨论的要点摘要 */
+  history_context: string;
+  /** 用户的提问内容 */
+  user_message: string;
+  /** 其他 agent 对同一问题的回复（可选） */
+  other_agents_context?: string;
+}
+
+/**
+ * 构建用户提问场景的 User Prompt
+ * 
+ * @param vars 变量对象
+ * @returns 填充后的 User Prompt 字符串
+ */
+export function buildUserQuestionReplyUserPrompt(vars: UserQuestionReplyPromptVars): string {
+  return fillTemplate(userQuestionUserPromptTemplate, {
+    topic: vars.topic,
+    history_context: vars.history_context,
+    user_message: vars.user_message,
+    other_agents_context: vars.other_agents_context
+      ? `【其他专家的回答】\n${vars.other_agents_context}`
+      : '',
+  });
+}
+
+/**
+ * 构建用户提问场景的 System Prompt
+ * 将 agent 原有的 systemPrompt 与用户提问模式后缀拼接
+ * 
+ * @param agentSystemPrompt agent 原有的 system prompt
+ * @returns 拼接后的 system prompt
+ */
+export function buildUserQuestionSystemPrompt(agentSystemPrompt: string): string {
+  return agentSystemPrompt + userQuestionSystemSuffix;
+}

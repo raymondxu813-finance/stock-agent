@@ -36,6 +36,8 @@ export interface Session {
   agents: AgentConfig[];
   /** 各轮次的总结列表 */
   rounds: RoundSummary[];
+  /** 主持人 prompts 记录（按轮次索引） */
+  moderatorPrompts?: Record<number, { systemPrompt: string; userPrompt: string }>;
 }
 
 /**
@@ -289,6 +291,14 @@ export function parseRoundSummary(jsonStr: string): RoundSummary {
           }
         }
         
+        // 在补全之前，清理末尾的 trailing commas 和不完整的 key-value 对
+        // 去除末尾空白
+        completedJson = completedJson.trimEnd();
+        // 去除末尾的 trailing comma（如 ",]" 或 ",}" 会导致 JSON 解析失败）
+        completedJson = completedJson.replace(/,\s*$/, '');
+        // 如果末尾是一个不完整的 key（如 "someKey":），移除它
+        completedJson = completedJson.replace(/,?\s*"[^"]*"\s*:\s*$/, '');
+
         // 补全未闭合的数组（先补数组，再补对象）
         while (bracketCount > 0) {
           completedJson += ']';
@@ -320,11 +330,20 @@ export function parseRoundSummary(jsonStr: string): RoundSummary {
             if (lastComplete > completedJson.length * 0.8) {
               // 如果最后一个完整结构在 80% 之后，尝试截取到那里
               let truncatedJson = completedJson.substring(0, lastComplete + 1);
+              // 清理 trailing commas
+              truncatedJson = truncatedJson.replace(/,\s*([}\]])/g, '$1');
               // 补全对象
               let braceCount2 = 0;
+              let bracketCount2 = 0;
               for (let i = 0; i < truncatedJson.length; i++) {
                 if (truncatedJson[i] === '{') braceCount2++;
                 else if (truncatedJson[i] === '}') braceCount2--;
+                else if (truncatedJson[i] === '[') bracketCount2++;
+                else if (truncatedJson[i] === ']') bracketCount2--;
+              }
+              while (bracketCount2 > 0) {
+                truncatedJson += ']';
+                bracketCount2--;
               }
               while (braceCount2 > 0) {
                 truncatedJson += '}';
@@ -348,7 +367,35 @@ export function parseRoundSummary(jsonStr: string): RoundSummary {
     console.error('[parseRoundSummary] Raw response length:', jsonStr.length);
     console.error('[parseRoundSummary] Raw response (first 500 chars):', jsonStr.substring(0, 500));
     console.error('[parseRoundSummary] Raw response (last 500 chars):', jsonStr.substring(Math.max(0, jsonStr.length - 500)));
-    throw new Error(`Failed to parse RoundSummary: ${error instanceof Error ? error.message : String(error)}`);
+
+    // 最后的兜底：尝试从原始文本中提取关键字段，构建最低限度的 RoundSummary
+    console.warn('[parseRoundSummary] Returning fallback minimal RoundSummary');
+    const fallbackSummary: RoundSummary = {
+      roundIndex: 1,
+      topicTitle: '',
+      consensusLevel: 50,
+      overallSummary: '主持人分析生成异常，请继续讨论。',
+      agentsSummary: [],
+      insights: [],
+      consensus: [],
+      conflicts: [],
+      openQuestions: [],
+      nextRoundSuggestions: [],
+    };
+    // 尝试从原始 JSON 文本中提取部分有效字段
+    try {
+      const roundIndexMatch = jsonStr.match(/"roundIndex"\s*:\s*(\d+)/);
+      if (roundIndexMatch) fallbackSummary.roundIndex = parseInt(roundIndexMatch[1]);
+      const topicMatch = jsonStr.match(/"topicTitle"\s*:\s*"([^"]+)"/);
+      if (topicMatch) fallbackSummary.topicTitle = topicMatch[1];
+      const consensusMatch = jsonStr.match(/"consensusLevel"\s*:\s*(\d+)/);
+      if (consensusMatch) fallbackSummary.consensusLevel = parseInt(consensusMatch[1]);
+      const summaryMatch = jsonStr.match(/"overallSummary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (summaryMatch) fallbackSummary.overallSummary = summaryMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    } catch (extractErr) {
+      // ignore extraction errors
+    }
+    return fallbackSummary;
   }
 }
 

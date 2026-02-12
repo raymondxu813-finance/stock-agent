@@ -9,13 +9,16 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.26",
+    "ai": "^6.0.79",
     "clsx": "^2.0.0",
     "lucide-react": "^0.294.0",
     "next": "^14.0.0",
     "openai": "^6.18.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "tailwind-merge": "^2.0.0"
+    "tailwind-merge": "^2.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

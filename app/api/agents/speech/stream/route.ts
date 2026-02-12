@@ -2,10 +2,12 @@ import { NextRequest } from 'next/server';
 import { getSession, restoreSession, buildHistoryText } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildAgentSpeechUserPrompt, buildAgentSubsequentRoundSpeechUserPrompt } from '@/prompts/builder';
-import { llmClient } from '@/lib/llmClient';
+import { executeAgentStream } from '@/lib/agentExecutor';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
 import { parseSentimentBlock } from '@/lib/utils';
 import { SENTIMENT_SUFFIX_INSTRUCTION } from '@/prompts/agents';
+
+const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工具：查询实时股价、获取最新资讯、分析K线数据。主动用数据说话。';
 
 /**
  * 流式获取单个 Agent 的发言（Server-Sent Events）
@@ -88,14 +90,14 @@ export async function POST(request: NextRequest) {
 1. 只回应跟你有明确、实质性分歧的Agent，观点相近的不用回应
 2. 用 @Agent名称 提及对方，说清楚分歧在哪，亮出你的看法
 3. 不要笼统总结话题，只聚焦具体分歧
-4. 200字以内，抓重点，说人话，像跟同行聊天一样自然` + SENTIMENT_SUFFIX_INSTRUCTION;
+4. 200字以内，抓重点，说人话，像跟同行聊天一样自然` + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
       
       console.log(`[API /api/agents/speech/stream] Using SUBSEQUENT round prompt for ${agent.name} in round ${roundIndex}`);
       console.log(`[API /api/agents/speech/stream] User prompt preview (first 500 chars):`, userPrompt.substring(0, 500));
       console.log(`[API /api/agents/speech/stream] System prompt preview (first 300 chars):`, systemPrompt.substring(0, 300));
     } else {
-      // 第一轮：使用原来的prompt模板 + 情绪输出指令
-      systemPrompt = agent.systemPrompt + SENTIMENT_SUFFIX_INSTRUCTION;
+      // 第一轮：使用原来的prompt模板 + 情绪输出指令 + 工具使用提示
+      systemPrompt = agent.systemPrompt + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
       userPrompt = buildAgentSpeechUserPrompt(agentId as AgentId, {
         topic: session.topicTitle,
         description: session.topicDescription,
@@ -144,22 +146,19 @@ export async function POST(request: NextRequest) {
             return; // 请求已取消
           }
           
-          let fullContent = '';
-          
           // 确保 systemPrompt 和 userPrompt 都有值
           if (!systemPrompt || !userPrompt) {
             throw new Error(`Missing prompt: systemPrompt=${!!systemPrompt}, userPrompt=${!!userPrompt}`);
           }
           
-          // 调用流式生成方法
-          await llmClient.generateStream(systemPrompt, userPrompt, agentId, (chunk: string) => {
-            if (isCancelled) return; // 请求已取消，停止处理
-            fullContent += chunk;
-            // 发送每个数据块
-            if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`))) {
-              return; // Controller已关闭，停止处理
-            }
-          });
+          // 使用支持工具调用的 agent 执行器
+          const { text: fullContent, toolCalls } = await executeAgentStream(
+            { systemPrompt, userPrompt, maxSteps: 3, temperature: 0.7 },
+            agentId,
+            agent.name,
+            encoder,
+            safeEnqueue,
+          );
           
           // 如果请求已取消，不发送完成信息
           if (isCancelled) return;
@@ -182,7 +181,7 @@ export async function POST(request: NextRequest) {
           // 从发言内容中解析 [SENTIMENT] 块，分离正文和情绪数据
           const { cleanContent, sentiments } = parseSentimentBlock(fullContent);
           
-          // 发送完成信息（包含prompts用于持久化）
+          // 发送完成信息（包含prompts和工具调用记录用于持久化）
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ 
             type: 'done', 
             agentId, 
@@ -191,6 +190,7 @@ export async function POST(request: NextRequest) {
             targetAgentId,
             targetAgentName,
             sentiments: sentiments.length > 0 ? sentiments : undefined,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
             systemPrompt,
             userPrompt
           })}\n\n`))) {

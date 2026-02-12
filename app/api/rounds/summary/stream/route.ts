@@ -11,7 +11,7 @@ import { llmClient } from '@/lib/llmClient';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData } = body;
+    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData, userQuestion } = body;
 
     if (!sessionId || !roundIndex) {
       return new Response(
@@ -76,8 +76,14 @@ export async function POST(request: NextRequest) {
           .join('\n\n')
       : '';
 
+    // 用户提问上下文（自由提问 Q&A 场景）
+    const userQuestionContext = userQuestion
+      ? `【用户提问】\n${userQuestion}\n\n---\n\n`
+      : '';
+
     // 合并所有讨论内容
     const allDiscussionContent = [
+      userQuestionContext,
       currentRoundAgentsSpeeches,
       currentRoundAgentsReviews,
       currentRoundAgentsRepliesText,

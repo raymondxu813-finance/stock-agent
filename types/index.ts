@@ -17,6 +17,12 @@ export type StockSentiment = {
   confidence?: 'high' | 'medium' | 'low'; // 置信度（可选）
 };
 
+export type ToolCallRecord = {
+  toolName: string;
+  args: Record<string, any>;
+  result?: any;
+};
+
 export type AgentComment = {
   agentId: string;
   agentName: string;
@@ -25,10 +31,14 @@ export type AgentComment = {
   expanded: boolean;
   targetAgentId?: string; // 针对回复的agent ID
   targetAgentName?: string; // 针对回复的agent名称
-  type?: 'speech' | 'reply'; // 发言类型：观点阐述 or 针对性回复
+  type?: 'speech' | 'reply' | 'user'; // 发言类型：观点阐述 / 针对性回复 / 用户提问
   replyRound?: number; // 第几次针对性回复（1, 2, 3）
   sentiments?: StockSentiment[]; // 对具体股票标的的情绪判断
-  streamStatus?: 'thinking' | 'typing'; // 流式状态：思考中/打字中（仅在流式过程中使用）
+  streamStatus?: 'thinking' | 'typing' | 'tool_calling'; // 流式状态
+  mentionedAgentIds?: string[]; // 用户 @提及的 agent ID 列表（仅 type='user' 时使用）
+  toolCalls?: ToolCallRecord[]; // agent 回复中使用的工具调用记录
+  activeToolCall?: string; // 当前正在调用的工具名称（流式过程中使用）
+  completedAt?: number; // 发言完成时间戳（用于显示 HH:mm）
 };
 
 export type ConsensusItem = {
@@ -76,6 +86,20 @@ export type RoundData = {
       userPrompt: string;
     };
   };
+  // 用户提问（当本轮由用户自由提问触发时）
+  userQuestion?: string;
+  userMentionedAgentIds?: string[];
+  userQuestionTime?: number; // 用户提问时间戳
+};
+
+export type ModeratorAnalysis = {
+  round: number;
+  consensusLevel: number;
+  summary: string;
+  newPoints: string[];
+  consensus: ConsensusItem[];
+  disagreements: DisagreementItem[];
+  sentimentSummary?: SentimentSummaryItem[]; // 各标的情绪汇总
 };
 
 export type Discussion = {
@@ -83,17 +107,9 @@ export type Discussion = {
   title: string;
   background: string;
   agents: Agent[];
-  rounds: RoundData[]; // 多轮讨论数据
+  rounds: RoundData[]; // 多轮讨论数据（包括用户自由提问触发的轮次）
   comments: AgentComment[]; // 保留用于向后兼容，指向最新一轮的 comments
-  moderatorAnalysis: {
-    round: number;
-    consensusLevel: number;
-    summary: string;
-    newPoints: string[];
-    consensus: ConsensusItem[];
-    disagreements: DisagreementItem[];
-    sentimentSummary?: SentimentSummaryItem[]; // 各标的情绪汇总
-  }; // 保留用于向后兼容，指向最新一轮的 moderatorAnalysis
+  moderatorAnalysis: ModeratorAnalysis; // 保留用于向后兼容，指向最新一轮的 moderatorAnalysis
   // 保存完整的 session 数据，用于继续讨论时恢复状态
   sessionData?: any; // Session 类型，使用 any 避免循环依赖
 };
