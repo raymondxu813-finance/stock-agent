@@ -134,7 +134,10 @@ export async function POST(request: NextRequest) {
               if (isCancelled) break;
 
               // 解析情绪数据
-              const { cleanContent, sentiments } = parseSentimentBlock(fullText);
+              const { cleanContent: sentimentClean, sentiments } = parseSentimentBlock(fullText);
+              // 兜底：剥离可能残留的 DSML 标记
+              const dsmlIdx = sentimentClean.search(/<[|｜\s]*(?:DSML[|｜\s]*)?(?:function_calls|tool_call|invoke)/i);
+              const cleanContent = dsmlIdx >= 0 ? sentimentClean.substring(0, dsmlIdx).trim() : sentimentClean;
 
               // 提取 @mention 的目标 agent
               let targetAgentId: string | undefined;

@@ -202,7 +202,10 @@ export async function POST(request: NextRequest) {
           }
           
           // 从发言内容中解析 [SENTIMENT] 块
-          const { cleanContent, sentiments } = parseSentimentBlock(fullContent);
+          const { cleanContent: sentimentClean, sentiments } = parseSentimentBlock(fullContent);
+          // 兜底：剥离可能残留的 DSML 标记
+          const dsmlIdx = sentimentClean.search(/<[|｜\s]*(?:DSML[|｜\s]*)?(?:function_calls|tool_call|invoke)/i);
+          const cleanContent = dsmlIdx >= 0 ? sentimentClean.substring(0, dsmlIdx).trim() : sentimentClean;
           
           // 发送完成信息
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ 

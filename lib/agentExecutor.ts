@@ -561,6 +561,13 @@ export async function executeAgentStream(
     console.log(`[agentExecutor] Agent ${agentName}: ${assistantToolCalls.length} tool(s) executed, continuing...`);
   }
 
+  // 最终防线：无条件清理 fullText 中可能残留的 DSML 标记
+  const dsmlFinalClean = fullText.search(/<[|｜\s]*(?:DSML[|｜\s]*)?(?:function_calls|tool_call|invoke)/i);
+  if (dsmlFinalClean >= 0) {
+    console.log(`[agentExecutor] Agent ${agentName}: stripping residual DSML from fullText at pos ${dsmlFinalClean}`);
+    fullText = fullText.substring(0, dsmlFinalClean).trim();
+  }
+
   console.log(`[agentExecutor] Agent ${agentName}: done, text=${fullText.length} chars, tools=${allToolCalls.length}`);
   return { text: fullText, toolCalls: allToolCalls };
 }

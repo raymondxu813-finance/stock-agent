@@ -1560,7 +1560,13 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               updateContent(displayContent, targetAgentId, targetAgentName, undefined, undefined, undefined, effectiveStatus, collectedToolCalls.length > 0 ? collectedToolCalls : undefined, undefined);
             } else if (data.type === 'done') {
               // 后端已经去掉了 [SENTIMENT] 标记，直接用干净的内容
-              fullContent = data.speech || data.review || data.reply || fullContent || '';
+              let doneContent = data.speech || data.review || data.reply || fullContent || '';
+              // 兜底：剥离可能残留的 DSML 标记（与 chunk 处理器一致）
+              const doneDsmlIdx = doneContent.search(/<[^>]*(?:function_calls|DSML|invoke)[^>]*>/i);
+              if (doneDsmlIdx !== -1) doneContent = doneContent.substring(0, doneDsmlIdx).trim();
+              const doneSentimentIdx = doneContent.indexOf('[SENTIMENT]');
+              if (doneSentimentIdx !== -1) doneContent = doneContent.substring(0, doneSentimentIdx).trim();
+              fullContent = doneContent;
               if (data.targetAgentId && data.targetAgentName) {
                 targetAgentId = String(data.targetAgentId);
                 targetAgentName = String(data.targetAgentName);
