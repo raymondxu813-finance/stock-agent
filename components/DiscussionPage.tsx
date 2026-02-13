@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, X, FileText, SendHorizontal, Square, Check, AlertCircle, Lightbulb, Share2, Download, Copy, CheckCheck } from 'lucide-react';
+import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, ArrowLeft, X, FileText, SendHorizontal, Square, Play, Check, AlertCircle, Lightbulb, Share2, Download, Copy, CheckCheck, Keyboard } from 'lucide-react';
 import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
 import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
@@ -656,6 +656,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   // 用户 Q&A 相关状态
   const [userInput, setUserInput] = useState(''); // 用户输入的文本
   const [isInputMultiLine, setIsInputMultiLine] = useState(false); // 输入框是否多行
+  const [bottomBarMode, setBottomBarMode] = useState<'edit' | 'discussion'>('discussion'); // 底部栏模式
   const [showMentionPopup, setShowMentionPopup] = useState(false); // 是否显示 @-mention 弹窗
   const [activeToolTip, setActiveToolTip] = useState<string | null>(null); // 当前展开的工具提示 key (roundIdx-commentIdx-toolIdx)
   const [mentionFilter, setMentionFilter] = useState(''); // @-mention 过滤关键词
@@ -2256,9 +2257,6 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
               {/* Agent Comments - Figma ChatBubble 风格 */}
               {round.comments.map((comment, commentIdx) => {
-                const isExpanded = comment.expanded ?? false;
-                const shouldTruncate = !isExpanded && !comment.streamStatus && comment.content.length > 200;
-                const displayContent = shouldTruncate ? comment.content.substring(0, 200) + '...' : comment.content;
 
                 return (
                 <div key={`${round.roundIndex}-${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${commentIdx}`} className="flex gap-3 px-5 py-4">
@@ -2338,17 +2336,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     ) : (
                       <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-[#EEEEEE]`}>
                         <div className="text-[14px] text-[#333333] leading-relaxed whitespace-pre-wrap break-words">
-                          {renderContentWithMentions(displayContent, discussion.agents)}
+                          {renderContentWithMentions(comment.content, discussion.agents)}
                           {comment.streamStatus === 'typing' && <span className="inline-block w-0.5 h-4 bg-[#AAE874] ml-0.5 animate-pulse" />}
                         </div>
-                        {!comment.streamStatus && comment.content.length > 200 && (
-                          <button
-                            onClick={() => toggleExpanded(round.roundIndex, `${comment.agentId}-${comment.type || 'speech'}-${comment.replyRound || 0}-${commentIdx}`)}
-                            className="mt-2 text-[13px] text-[#AAE874] font-medium hover:underline"
-                          >
-                            {isExpanded ? '收起' : '查看全部'}
-                          </button>
-                        )}
                       </div>
                     )}
                     {/* 情绪标签 — SVG 图标风格 */}
@@ -2411,7 +2401,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       onClick={() => setCollapsedModerator(prev => ({ ...prev, [round.roundIndex]: !prev[round.roundIndex] }))}
                     >
                       <div className="flex items-center gap-2.5">
-                        <AgentAvatar type="sphere" size={32} />
+                        <img src="/brand-avatar.png" alt="主持人" className="w-8 h-8 rounded-full object-cover" />
                         <h2 className="text-[15px] font-bold text-black leading-tight">主持人分析</h2>
                       </div>
                       <div className="flex items-center gap-2">
@@ -2918,11 +2908,67 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         {/* Glassmorphic Background */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
 
-        <div className={`relative flex gap-3 px-5 py-4 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
-          {/* Input Area + @-mention Popup */}
-          <div className="flex-1 relative">
+        {/* ===== 统一布局（形变动画） ===== */}
+        <div className={`relative flex px-5 py-4 ${bottomBarMode === 'edit' && isInputMultiLine ? 'items-end' : 'items-center'}`}>
+
+          {/* ── 左侧按钮：图标旋转切换 ── */}
+          <button
+            onClick={() => {
+              if (bottomBarMode === 'discussion') {
+                setBottomBarMode('edit');
+                setUserInput('');
+                setIsInputMultiLine(false);
+                if (textareaRef.current) textareaRef.current.style.height = '40px';
+                setTimeout(() => textareaRef.current?.focus(), 80);
+              } else {
+                setBottomBarMode('discussion');
+                setUserInput('');
+                setIsInputMultiLine(false);
+                if (textareaRef.current) textareaRef.current.style.height = '40px';
+                textareaRef.current?.blur();
+              }
+            }}
+            className="flex-shrink-0 w-10 h-10 rounded-full border border-[#E8E8E8] bg-white flex items-center justify-center active:scale-95 shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+            style={{ transition: 'transform 0.3s ease, box-shadow 0.3s ease' }}
+            title={bottomBarMode === 'discussion' ? '输入提问' : '返回讨论模式'}
+          >
+            {/* 两个图标叠放，用 opacity + rotate 做交叉过渡 */}
+            <div className="relative w-[18px] h-[18px]">
+              <Keyboard
+                className="absolute inset-0 w-[18px] h-[18px] text-[#666666]"
+                strokeWidth={2}
+                style={{
+                  transition: 'opacity 0.3s ease, transform 0.3s ease',
+                  opacity: bottomBarMode === 'discussion' ? 1 : 0,
+                  transform: bottomBarMode === 'discussion' ? 'rotate(0deg)' : 'rotate(-180deg)',
+                }}
+              />
+              <ArrowLeft
+                className="absolute inset-0 w-[18px] h-[18px] text-[#666666]"
+                strokeWidth={2}
+                style={{
+                  transition: 'opacity 0.3s ease, transform 0.3s ease',
+                  opacity: bottomBarMode === 'edit' ? 1 : 0,
+                  transform: bottomBarMode === 'edit' ? 'rotate(0deg)' : 'rotate(180deg)',
+                }}
+              />
+            </div>
+          </button>
+
+          {/* ── 中间输入框区域：展开/收起动画 ── */}
+          <div
+            className="relative"
+            style={{
+              flex: bottomBarMode === 'edit' ? '1 1 0%' : '0 0 0px',
+              opacity: bottomBarMode === 'edit' ? 1 : 0,
+              overflow: 'hidden',
+              marginLeft: bottomBarMode === 'edit' ? 12 : 0,
+              transition: 'flex 0.3s ease, opacity 0.25s ease, margin-left 0.3s ease',
+              minWidth: 0,
+            }}
+          >
             {/* @-mention 弹窗 */}
-            {showMentionPopup && (
+            {bottomBarMode === 'edit' && showMentionPopup && (
               <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-2xl border border-[#E8E8E8] shadow-[0_4px_20px_rgba(0,0,0,0.12)] overflow-hidden z-[60]">
                 <div className="px-3 py-2 text-[11px] text-[#999999] font-medium border-b border-[#F0F0F0]">选择要 @的专家</div>
                 {discussion.agents
@@ -2944,7 +2990,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             )}
 
-            {/* 可编辑输入框 — 始终保持圆弧弧度（9999px），高度即时变化 */}
+            {/* 可编辑输入框 */}
             <textarea
               ref={textareaRef}
               value={userInput}
@@ -2961,7 +3007,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 }
               }}
               disabled={isLoading}
-              placeholder={isLoading ? '专家们正在讨论中...' : '向AI顾问提问...'}
+              placeholder={isLoading ? '专家们正在讨论中...' : '向AI专家提问...'}
               rows={1}
               className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-[#F8F8F8] disabled:cursor-not-allowed [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
@@ -2982,51 +3028,88 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 target.style.height = newH + 'px';
                 target.style.overflow = scrollH > 98 ? 'auto' : 'hidden';
                 setIsInputMultiLine(newH > 40);
-                // 自动滚动到文字底部
                 target.scrollTop = target.scrollHeight;
               }}
             />
           </div>
 
-          {/* Send / Stop Button — 四态 */}
-          {isLoading && currentRoundIndex > 1 ? (
-            /* 加载中 + 第2轮+：红色停止按钮 */
-            <button
-              onClick={handleStopDiscussion}
-              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-[#E05454] active:scale-95 shadow-[0_4px_16px_rgba(224,84,84,0.4)] hover:shadow-[0_6px_20px_rgba(224,84,84,0.5)]"
-              title="中止讨论"
-            >
-              <Square className="w-4 h-4 text-white fill-white" strokeWidth={0} />
-            </button>
-          ) : isLoading ? (
-            /* 加载中 + 第1轮：disabled spinner */
-            <button
-              disabled
-              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-[#E8E8E8] cursor-not-allowed opacity-50"
-              title="讨论进行中"
-            >
-              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            </button>
-          ) : (
-            /* 空闲态：发送提问 / 继续下一轮 */
-            <button
-              onClick={() => {
-                if (userInput.trim()) {
-                  handleUserSend();
-                } else {
-                  handleContinueDiscussion();
-                }
-              }}
-              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]"
-              title={userInput.trim() ? '发送提问' : '继续下一轮讨论'}
-            >
-              {userInput.trim() ? (
-                <SendHorizontal className="w-5 h-5 text-white" strokeWidth={2.5} />
-              ) : (
-                <ArrowRight className="w-5 h-5 text-white" strokeWidth={2.5} />
-              )}
-            </button>
-          )}
+          {/* ── 右侧按钮：圆形 <-> 长条变形 ── */}
+          {(() => {
+            // 确定按钮状态
+            const isEdit = bottomBarMode === 'edit';
+            const isStoppable = isLoading && currentRoundIndex > 1;
+            const isFirstRoundLoading = isLoading && currentRoundIndex <= 1;
+            const isIdle = !isLoading;
+
+            // 确定背景色（编辑模式下圆形按钮的背景）
+            const bgStyle: React.CSSProperties = isStoppable
+              ? { background: '#E05454' }
+              : isFirstRoundLoading
+                ? { background: '#E8E8E8' }
+                : { background: 'linear-gradient(to right, #AAE874, #7BC74D)' };
+
+            // 确定阴影
+            const shadowStyle = isStoppable
+              ? '0 4px 16px rgba(224,84,84,0.4)'
+              : isFirstRoundLoading
+                ? 'none'
+                : '0 4px 16px rgba(170,232,116,0.4)';
+
+            return (
+              <button
+                onClick={() => {
+                  if (isFirstRoundLoading) return; // disabled
+                  if (isStoppable) { handleStopDiscussion(); return; }
+                  // 空闲态
+                  if (isEdit && userInput.trim()) {
+                    handleUserSend();
+                  } else {
+                    handleContinueDiscussion();
+                  }
+                }}
+                disabled={isFirstRoundLoading}
+                className="flex-shrink-0 h-10 rounded-full flex items-center justify-center active:scale-[0.97]"
+                style={{
+                  ...bgStyle,
+                  boxShadow: shadowStyle,
+                  width: isEdit ? 40 : undefined,
+                  flex: isEdit ? '0 0 40px' : '1 1 0%',
+                  marginLeft: 12,
+                  cursor: isFirstRoundLoading ? 'not-allowed' : 'pointer',
+                  opacity: isFirstRoundLoading ? 0.6 : 1,
+                  transition: 'flex 0.3s ease, width 0.3s ease, background 0.3s ease, box-shadow 0.3s ease, opacity 0.3s ease',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {/* 文字标签 — 讨论模式显示，编辑模式隐藏 */}
+                <span
+                  style={{
+                    maxWidth: isEdit ? 0 : 120,
+                    opacity: isEdit ? 0 : 1,
+                    overflow: 'hidden',
+                    transition: 'max-width 0.3s ease, opacity 0.2s ease, margin 0.3s ease',
+                    display: 'inline-block',
+                    marginRight: isEdit ? 0 : 8,
+                  }}
+                  className="text-[14px] font-bold text-white"
+                >
+                  {isStoppable ? '中止讨论' : isFirstRoundLoading ? '专家发言中' : '继续讨论'}
+                </span>
+
+                {/* 图标 */}
+                {isFirstRoundLoading ? (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                ) : isStoppable ? (
+                  <Square className="w-3.5 h-3.5 text-white fill-white flex-shrink-0" strokeWidth={0} />
+                ) : isEdit && userInput.trim() ? (
+                  <SendHorizontal className="w-5 h-5 text-white flex-shrink-0" strokeWidth={2.5} />
+                ) : (
+                  <ArrowRight className="w-5 h-5 text-white flex-shrink-0" strokeWidth={2.5} />
+                )}
+              </button>
+            );
+          })()}
         </div>
         {/* Safe area spacer — 独立于内容区域，不影响内容行高度 */}
         <div className="relative" style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
@@ -3473,21 +3556,6 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                   </div>
                                   {/* Content */}
                                   <p className="text-[14px] text-[#333333] leading-[1.7] mb-2">{hl.content}</p>
-                                  {/* Supporting agents */}
-                                  {hl.supportingAgents && hl.supportingAgents.length > 0 && (
-                                    <div className="flex items-center gap-1.5 mb-1.5">
-                                      <span className="text-[10px] text-[#BBBBBB] font-bold">认同</span>
-                                      {hl.supportingAgents.map((name, sIdx) => {
-                                        const agent = discussion.agents.find(a => a.name === name);
-                                        return (
-                                          <span key={sIdx} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#D97706] border border-[#FDE68A]/60 font-medium">
-                                            {agent && <span className="w-3 h-3 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(agent)} size={12} /></span>}
-                                            {name}
-                                          </span>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
                                   {/* Reason */}
                                   {hl.reason && (
                                     <p className="text-[12px] text-[#888888] leading-relaxed">{hl.reason}</p>
