@@ -20,6 +20,8 @@ interface HistoryTopic {
 
 // localStorage key（与 HistoryTopicsDrawer 和 DiscussionPage 保持一致）
 const HISTORY_TOPICS_KEY = 'multiagent_history_topics';
+// 持久化已选 agent 的 localStorage key
+const SELECTED_AGENTS_KEY = 'multiagent_selected_agents';
 
 type WelcomePageProps = {
   onCreateDiscussion: (discussion: Discussion) => void;
@@ -31,6 +33,7 @@ const ALL_AGENTS: (SlotAgent & { agentId: AgentId; color: string; icon: string }
     id: 'macro_economist',
     agentId: 'macro_economist' as AgentId,
     name: '涨停敢死队长',
+    description: '短线打板之王，5万本金十年翻到8000万',
     avatar: 'rocket' as AvatarType,
     auraColor: 'from-purple-400/20 to-pink-500/10',
     color: 'bg-red-500',
@@ -40,6 +43,7 @@ const ALL_AGENTS: (SlotAgent & { agentId: AgentId; color: string; icon: string }
     id: 'finance_expert',
     agentId: 'finance_expert' as AgentId,
     name: '价值投资苦行僧',
+    description: '巴菲特信徒，重仓优质股十年不动摇',
     avatar: 'safe' as AvatarType,
     auraColor: 'from-amber-400/20 to-yellow-600/10',
     color: 'bg-emerald-600',
@@ -49,6 +53,7 @@ const ALL_AGENTS: (SlotAgent & { agentId: AgentId; color: string; icon: string }
     id: 'senior_stock_practitioner',
     agentId: 'senior_stock_practitioner' as AgentId,
     name: '量化狙击手',
+    description: 'MIT 数学博士，用算法和数据统治市场',
     avatar: 'lightning' as AvatarType,
     auraColor: 'from-blue-400/20 to-indigo-600/10',
     color: 'bg-indigo-600',
@@ -58,13 +63,95 @@ const ALL_AGENTS: (SlotAgent & { agentId: AgentId; color: string; icon: string }
     id: 'veteran_stock_tycoon',
     agentId: 'veteran_stock_tycoon' as AgentId,
     name: '草根股神老王',
+    description: '28年老股民，2万起步身家过三千万',
     avatar: 'rings' as AvatarType,
     auraColor: 'from-emerald-400/20 to-teal-600/10',
     color: 'bg-amber-600',
     icon: '🎣',
   },
+  {
+    id: 'policy_analyst',
+    agentId: 'policy_analyst' as AgentId,
+    name: '政策风向标',
+    description: '前智库研究员，从红头文件中嗅到投资机会',
+    avatar: 'compass' as AvatarType,
+    auraColor: 'from-red-400/20 to-rose-500/10',
+    color: 'bg-red-600',
+    icon: '🏛️',
+  },
+  {
+    id: 'etf_auntie',
+    agentId: 'etf_auntie' as AgentId,
+    name: 'ETF定投大妈',
+    description: '退休老师，定投十年80万变160万',
+    avatar: 'piggybank' as AvatarType,
+    auraColor: 'from-pink-400/20 to-rose-400/10',
+    color: 'bg-pink-500',
+    icon: '🛒',
+  },
+  {
+    id: 'cross_border_hunter',
+    agentId: 'cross_border_hunter' as AgentId,
+    name: '港美股猎人',
+    description: '沃顿MBA，横跨A港美三大市场',
+    avatar: 'globe' as AvatarType,
+    auraColor: 'from-sky-400/20 to-blue-600/10',
+    color: 'bg-sky-600',
+    icon: '🌍',
+  },
+  {
+    id: 'institutional_trader',
+    agentId: 'institutional_trader' as AgentId,
+    name: '机构操盘手',
+    description: 'TOP10公募交易主管，管着300亿资金',
+    avatar: 'shield' as AvatarType,
+    auraColor: 'from-slate-400/20 to-slate-600/10',
+    color: 'bg-slate-600',
+    icon: '🏦',
+  },
+  {
+    id: 'finance_kol',
+    agentId: 'finance_kol' as AgentId,
+    name: '财经大V',
+    description: '300万粉丝博主，把股票讲成脱口秀',
+    avatar: 'megaphone' as AvatarType,
+    auraColor: 'from-orange-400/20 to-amber-500/10',
+    color: 'bg-orange-500',
+    icon: '🎙️',
+  },
+  {
+    id: 'risk_controller',
+    agentId: 'risk_controller' as AgentId,
+    name: '风控铁面人',
+    description: '前券商风控总监，被称"乌鸦嘴"但每次都对',
+    avatar: 'radar' as AvatarType,
+    auraColor: 'from-emerald-500/20 to-green-700/10',
+    color: 'bg-emerald-700',
+    icon: '🛡️',
+  },
+  {
+    id: 'industry_researcher',
+    agentId: 'industry_researcher' as AgentId,
+    name: '行业深潜者',
+    description: '前卖方首席，产业链从头到尾摸透',
+    avatar: 'microscope' as AvatarType,
+    auraColor: 'from-violet-400/20 to-purple-600/10',
+    color: 'bg-violet-600',
+    icon: '🔬',
+  },
+  {
+    id: 'cycle_theorist',
+    agentId: 'cycle_theorist' as AgentId,
+    name: '周期天王',
+    description: '经济学教授，用百年周期理论解读市场',
+    avatar: 'hourglass' as AvatarType,
+    auraColor: 'from-amber-400/20 to-orange-600/10',
+    color: 'bg-amber-700',
+    icon: '⏳',
+  },
 ];
 
+const MIN_SLOTS = 3;
 const MAX_SLOTS = 6;
 
 // 热门话题列表
@@ -82,10 +169,51 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [activeTopicIndex, setActiveTopicIndex] = useState(0);
   const topicsScrollRef = useRef<HTMLDivElement>(null);
-  // 默认选中全部4个agent
-  const [selectedAgents, setSelectedAgents] = useState<typeof ALL_AGENTS>(
-    [...ALL_AGENTS]
-  );
+  // agent 选择状态（初始为空，由 useEffect 从 localStorage 加载或随机生成）
+  const [selectedAgents, setSelectedAgents] = useState<typeof ALL_AGENTS>([]);
+
+  // 首次加载：从 localStorage 恢复已选 agent，若无则随机选 4 位并持久化
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(SELECTED_AGENTS_KEY);
+      if (stored) {
+        const ids: string[] = JSON.parse(stored);
+        const restored = ids
+          .map(id => ALL_AGENTS.find(a => a.id === id))
+          .filter(Boolean) as typeof ALL_AGENTS;
+        if (restored.length >= MIN_SLOTS && restored.length <= MAX_SLOTS) {
+          setSelectedAgents(restored);
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('[WelcomePage] Error loading persisted agents:', e);
+    }
+    // 首次访问或数据异常：随机选 4 位
+    const shuffled = [...ALL_AGENTS].sort(() => Math.random() - 0.5);
+    const defaults = shuffled.slice(0, 4);
+    setSelectedAgents(defaults);
+    try {
+      localStorage.setItem(SELECTED_AGENTS_KEY, JSON.stringify(defaults.map(a => a.id)));
+    } catch (e) {
+      console.error('[WelcomePage] Error persisting default agents:', e);
+    }
+  }, []);
+
+  // 每次选择变更后持久化（跳过初始空数组）
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    if (selectedAgents.length === 0) return; // 防止初始空状态覆盖
+    try {
+      localStorage.setItem(SELECTED_AGENTS_KEY, JSON.stringify(selectedAgents.map(a => a.id)));
+    } catch (e) {
+      console.error('[WelcomePage] Error persisting agent selection:', e);
+    }
+  }, [selectedAgents]);
 
   // Track active topic card scroll position
   useEffect(() => {
@@ -107,6 +235,8 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
   const toggleAgent = (agent: SlotAgent) => {
     const found = selectedAgents.find(a => a.id === agent.id);
     if (found) {
+      // 不允许低于最少人数
+      if (selectedAgents.length <= MIN_SLOTS) return;
       setSelectedAgents(selectedAgents.filter(a => a.id !== agent.id));
     } else if (selectedAgents.length < MAX_SLOTS) {
       const fullAgent = ALL_AGENTS.find(a => a.id === agent.id);
@@ -116,12 +246,11 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
     }
   };
 
-  const removeAgent = (agentId: string) => {
-    setSelectedAgents(selectedAgents.filter(a => a.id !== agentId));
-  };
-
-  // Create array of MAX_SLOTS slots
+  // Create array of MAX_SLOTS(6) slots for the 2x3 grid
   const slots = Array.from({ length: MAX_SLOTS }, (_, index) => selectedAgents[index] || null);
+
+  // 是否满足最低人数要求
+  const isAgentCountValid = selectedAgents.length >= MIN_SLOTS && selectedAgents.length <= MAX_SLOTS;
 
   // 保存历史话题到localStorage
   const saveHistoryTopic = (discussion: Discussion) => {
@@ -159,7 +288,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
 
   // 创建讨论的通用函数
   const createDiscussion = async (topicTitle: string) => {
-    if (!topicTitle.trim() || isLoading || selectedAgents.length === 0) return;
+    if (!topicTitle.trim() || isLoading || selectedAgents.length < MIN_SLOTS || selectedAgents.length > MAX_SLOTS) return;
 
     setIsLoading(true);
     try {
@@ -261,6 +390,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
         agents={ALL_AGENTS}
         selectedAgents={selectedAgents}
         onToggle={toggleAgent}
+        minSlots={MIN_SLOTS}
         maxSlots={MAX_SLOTS}
       />
 
@@ -268,7 +398,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
       <div className="relative px-5 py-4 flex items-center justify-between">
         <button
           onClick={() => setIsDrawerOpen(true)}
-          className="w-10 h-10 rounded-full border border-[#E0E0E0] flex items-center justify-center active:scale-95 transition-transform"
+          className="w-10 h-10 rounded-full flex items-center justify-center active:scale-95 transition-transform"
         >
           <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
         </button>
@@ -287,20 +417,20 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
             <div className="absolute bottom-4 left-[25%] w-1 h-1 bg-[#AAE874] rounded-full opacity-35 animate-pulse" style={{ animationDelay: '1.2s' }} />
             <div className="absolute bottom-0 right-[38%] w-1 h-1 bg-[#AAE874] rounded-full opacity-45 animate-pulse" style={{ animationDelay: '1.7s' }} />
           </div>
-          {/* GreenSphere 3D Avatar — 100px, matching Figma BrandHeader */}
+          {/* Brand Avatar — 100px */}
           <div className="relative z-10 drop-shadow-2xl">
-            <AgentAvatar type="sphere" size={100} />
+            <img src="/brand-avatar.png" alt="MultiAgent" width={100} height={100} className="rounded-full" />
           </div>
         </div>
 
         {/* Left-Aligned Text Content */}
         <div className="px-5 text-left space-y-2">
           <p className="text-[14px] text-[#999999] leading-relaxed">
-            同一个 AI，可能遇到幻觉
+            一个视角，难免有盲区
           </p>
-          <h2 className="text-[22px] text-black font-medium">问多个 AI，得到真相</h2>
+          <h2 className="text-[22px] text-black font-medium">多位专家交锋，越辩越明</h2>
           <p className="text-[14px] text-[#999999] leading-relaxed">
-            选择你的 AI 顾问团，开始讨论
+            组建你的 AI 顾问团，开始讨论
           </p>
         </div>
       </div>
@@ -315,7 +445,6 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
                 key={index}
                 agent={agent || undefined}
                 onClick={() => setIsSheetOpen(true)}
-                onDelete={agent ? () => removeAgent(agent.id) : undefined}
               />
             ))}
           </div>
@@ -327,18 +456,11 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
                 key={index + 3}
                 agent={agent || undefined}
                 onClick={() => setIsSheetOpen(true)}
-                onDelete={agent ? () => removeAgent(agent.id) : undefined}
               />
             ))}
           </div>
         </div>
 
-        {/* Selection Count */}
-        <div className="text-center mb-4">
-          <p className="text-[14px] text-[#666666]">
-            已选 <span className="font-bold text-[#AAE874]">{selectedAgents.length}/{MAX_SLOTS}</span>
-          </p>
-        </div>
       </div>
 
       {/* Recommended Topics Carousel */}
@@ -351,7 +473,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
             <button
               key={index}
               onClick={() => handleTopicClick(topicText)}
-              disabled={isLoading || selectedAgents.length === 0}
+              disabled={isLoading || selectedAgents.length < MIN_SLOTS}
               className="flex-shrink-0 w-[calc(100%-40px)] snap-start bg-white rounded-full px-4 py-2.5 border border-[#E8E8E8] shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:border-[#AAE874] hover:shadow-[0_4px_12px_rgba(170,232,116,0.2)] active:scale-[0.98] transition-all duration-200 text-left group disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <div className="flex items-center gap-2.5">
@@ -385,13 +507,13 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Sticky Action Bar */}
-      <div className="sticky bottom-0 left-0 right-0 px-5 pb-6 pt-4 z-50">
+      {/* Bottom Action Bar — 与讨论页底部栏对齐 */}
+      <div className="absolute bottom-0 left-0 right-0 z-50">
         {/* Glassmorphic Background with Gradient */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
 
         {/* Input Bar Container */}
-        <div className="relative flex items-center gap-3">
+        <div className="relative flex items-center gap-3 px-5 py-4">
           {/* Input Field */}
           <div className="flex-1 relative">
             <input
@@ -400,17 +522,23 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
               onChange={(e) => setTopic(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleStartDiscussion()}
               placeholder="输入话题，开始讨论..."
-              className="w-full px-5 py-3.5 bg-white border border-[#E8E8E8] rounded-full text-[15px] text-black placeholder:text-[#AAAAAA] focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] transition-all shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+              className="block w-full px-5 bg-white border border-[#E8E8E8] rounded-full text-[14px] text-black placeholder:text-[#AAAAAA] focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] transition-all shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+              style={{
+                height: '40px',
+                lineHeight: '20px',
+                paddingTop: '9px',
+                paddingBottom: '9px',
+              }}
             />
           </div>
 
           {/* Send Button */}
           <button
             onClick={handleStartDiscussion}
-            disabled={!topic.trim() || isLoading || selectedAgents.length === 0}
+            disabled={!topic.trim() || isLoading || selectedAgents.length < MIN_SLOTS}
             className={`
-              flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all
-              ${topic.trim() && !isLoading && selectedAgents.length > 0
+              flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all
+              ${topic.trim() && !isLoading && selectedAgents.length >= MIN_SLOTS
                 ? 'bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]'
                 : 'bg-[#E8E8E8] cursor-not-allowed opacity-50'
               }

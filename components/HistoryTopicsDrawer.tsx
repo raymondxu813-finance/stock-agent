@@ -272,8 +272,8 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
 
       {/* Drawer */}
       <div
-        className={`absolute left-0 top-0 bottom-0 w-[280px] bg-white z-[70] shadow-2xl transition-transform duration-300 ease-out flex flex-col ${
-          isOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`absolute left-0 top-0 bottom-0 w-[280px] bg-white z-[70] transition-transform duration-300 ease-out flex flex-col ${
+          isOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full shadow-none'
         }`}
       >
         {/* Header */}

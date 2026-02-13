@@ -5,6 +5,9 @@
  * 
  * 使用与 llmClient.ts 相同的原生 openai SDK，确保与 DeepSeek 兼容。
  * 支持流式输出 + 工具调用（function calling）+ 多步对话。
+ * 
+ * 改进：在源头剥离 DSML 块和 [SENTIMENT] 块，只发送干净的增量 chunk 事件，
+ *       不再发送 content_replace 事件，确保前端打字机输出流畅无闪烁。
  */
 
 /**
@@ -150,7 +153,6 @@ function parseDsmlToolCalls(text: string): { cleanText: string; toolCalls: Array
     }
 
     // Map DSML tool names and parameter names to our tool's expected format
-    // (DeepSeek's native format may use different names than our definitions)
     const mappedName = mapDsmlToolName(name);
     const mappedArgs = mapDsmlToolArgs(mappedName, args);
     toolCalls.push({ name: mappedName, args: mappedArgs });
@@ -161,11 +163,9 @@ function parseDsmlToolCalls(text: string): { cleanText: string; toolCalls: Array
 
 /**
  * Map DSML tool names to our actual tool names.
- * DeepSeek may hallucinate different tool names in its DSML output.
  */
 function mapDsmlToolName(name: string): string {
   const nameMap: Record<string, string> = {
-    // K线/技术分析相关的别名 → getKlineData
     'analyzeKLineData': 'getKlineData',
     'analyzeKline': 'getKlineData',
     'getKLine': 'getKlineData',
@@ -173,11 +173,9 @@ function mapDsmlToolName(name: string): string {
     'klineData': 'getKlineData',
     'get_kline_data': 'getKlineData',
     'analyze_kline_data': 'getKlineData',
-    // 股价查询别名 → getStockPrice
     'queryStockPrice': 'getStockPrice',
     'get_stock_price': 'getStockPrice',
     'stockPrice': 'getStockPrice',
-    // 新闻查询别名 → getLatestNews
     'getNews': 'getLatestNews',
     'get_latest_news': 'getLatestNews',
     'searchNews': 'getLatestNews',
@@ -194,19 +192,16 @@ function mapDsmlToolArgs(toolName: string, args: Record<string, any>): Record<st
 
   switch (toolName) {
     case 'getLatestNews':
-      // DSML: keyword → query, count → limit
       if (mapped.keyword && !mapped.query) { mapped.query = mapped.keyword; delete mapped.keyword; }
       if (mapped.count !== undefined && mapped.limit === undefined) { mapped.limit = mapped.count; delete mapped.count; }
       break;
     case 'getStockPrice':
-      // DSML might use: name, stock_name, stock, stock_code → symbol
       if (!mapped.symbol) {
         const alt = mapped.name || mapped.stock_name || mapped.stock || mapped.stock_code;
         if (alt) { mapped.symbol = alt; delete mapped.name; delete mapped.stock_name; delete mapped.stock; delete mapped.stock_code; }
       }
       break;
     case 'getKlineData':
-      // DSML might use: name, stock, stock_name → symbol
       if (!mapped.symbol) {
         const alt = mapped.name || mapped.stock || mapped.stock_name;
         if (alt) { mapped.symbol = alt; delete mapped.name; delete mapped.stock; delete mapped.stock_name; }
@@ -221,19 +216,18 @@ function mapDsmlToolArgs(toolName: string, args: Record<string, any>): Record<st
  * 执行工具调用（调用 tools 目录下对应的 execute 函数）
  */
 async function executeTool(name: string, args: Record<string, any>): Promise<any> {
-  // 动态导入工具模块（保持服务端专用）
   switch (name) {
     case 'getStockPrice': {
       const { getStockPrice } = await import('./tools/stockPrice');
-      return getStockPrice.execute(args as any);
+      return (getStockPrice as any).execute(args);
     }
     case 'getLatestNews': {
       const { getLatestNews } = await import('./tools/news');
-      return getLatestNews.execute({ limit: 3, ...args } as any);
+      return (getLatestNews as any).execute({ limit: 3, ...args });
     }
     case 'getKlineData': {
       const { getKlineData } = await import('./tools/kline');
-      return getKlineData.execute({ period: 'daily', ...args } as any);
+      return (getKlineData as any).execute({ period: 'daily', ...args });
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
@@ -267,6 +261,11 @@ export interface ToolCallRecord {
  * 4. 重复直到模型不再调用工具或达到 maxSteps
  * 
  * 所有事件通过 SSE 实时推送给前端。
+ * 
+ * 改进点：
+ * - DSML 和 [SENTIMENT] 在源头被剥离，不会泄露到前端
+ * - 不再发送 content_replace 事件，只发送干净的增量 chunk
+ * - 前端打字机效果平滑无闪烁
  */
 export async function executeAgentStream(
   params: ExecuteAgentParams,
@@ -282,7 +281,6 @@ export async function executeAgentStream(
     temperature = 0.7,
   } = params;
 
-  // 动态导入 OpenAI SDK
   const { default: OpenAI } = await import('openai');
   
   const apiKey = getNextApiKey();
@@ -293,7 +291,6 @@ export async function executeAgentStream(
 
   console.log(`[agentExecutor] Starting: model=${modelName}, agent=${agentName}, maxSteps=${maxSteps}`);
 
-  // 构建消息历史（多步工具调用时会追加）
   const messages: Array<any> = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
@@ -306,10 +303,9 @@ export async function executeAgentStream(
   while (stepsRemaining > 0) {
     stepsRemaining--;
 
-    // 最后一轮不传 tools，强制模型生成文本回复（避免无限工具调用循环）
+    // 最后一轮不传 tools，强制模型生成文本回复
     const offerTools = stepsRemaining > 0;
 
-    // 调用 OpenAI API（流式）
     const stream = await openai.chat.completions.create({
       model: modelName,
       messages,
@@ -319,7 +315,6 @@ export async function executeAgentStream(
       max_tokens: 1500,
     });
 
-    // 收集本轮的文本和工具调用
     let stepContent = '';
     const pendingToolCalls: Map<number, {
       id: string;
@@ -327,12 +322,12 @@ export async function executeAgentStream(
       arguments: string;
     }> = new Map();
 
-    // DSML 防泄露：缓冲末尾内容，确保 DSML 标签不会被发送到前端
-    const HOLD_BUFFER_SIZE = 30;
+    // DSML + SENTIMENT 防泄露缓冲
+    // 保留末尾内容用于检测 DSML 和 [SENTIMENT] 标签
+    const HOLD_BUFFER_SIZE = 40;
     let chunkSendBuffer = '';
-    let dsmlBlocked = false;
+    let contentBlocked = false; // DSML 或 SENTIMENT 被检测到后停止发送
 
-    // 安全地发送一段文本作为 chunk 事件
     const flushChunk = (text: string): boolean => {
       if (!text) return true;
       return safeEnqueue(encoder.encode(
@@ -340,8 +335,10 @@ export async function executeAgentStream(
       ));
     };
 
-    // DSML 检测正则：匹配 <|DSML|function_calls> 或类似变体
+    // DSML 检测正则
     const dsmlPatternRegex = /<[|｜\s]*(?:DSML[|｜\s]*)?(?:function_calls|tool_call)/i;
+    // SENTIMENT 检测
+    const sentimentPattern = '[SENTIMENT]';
 
     for await (const chunk of stream) {
       const choice = chunk.choices[0];
@@ -349,30 +346,44 @@ export async function executeAgentStream(
 
       const delta = choice.delta;
 
-      // 处理文本内容（带 DSML 缓冲）
+      // 处理文本内容
       if (delta?.content) {
         stepContent += delta.content;
         fullText += delta.content;
 
-        if (dsmlBlocked) {
-          // 已检测到 DSML，后续文本不再发送到前端
+        if (contentBlocked) {
+          // 已检测到 DSML 或 SENTIMENT，后续文本不发送到前端
           continue;
         }
 
         chunkSendBuffer += delta.content;
 
-        // 检查缓冲区是否包含 DSML 模式
+        // 检查 DSML
         const dsmlMatch = chunkSendBuffer.search(dsmlPatternRegex);
         if (dsmlMatch !== -1) {
-          // 确认检测到 DSML — 只发送 DSML 之前的安全内容
           const safeContent = chunkSendBuffer.substring(0, dsmlMatch);
-          dsmlBlocked = true;
+          contentBlocked = true;
           chunkSendBuffer = '';
           if (safeContent && !flushChunk(safeContent)) {
             return { text: fullText, toolCalls: allToolCalls };
           }
-        } else if (chunkSendBuffer.length > HOLD_BUFFER_SIZE) {
-          // 缓冲区足够大且无 DSML — 发送安全部分，保留末尾用于检测
+          continue;
+        }
+
+        // 检查 [SENTIMENT]
+        const sentimentIdx = chunkSendBuffer.indexOf(sentimentPattern);
+        if (sentimentIdx !== -1) {
+          const safeContent = chunkSendBuffer.substring(0, sentimentIdx);
+          contentBlocked = true;
+          chunkSendBuffer = '';
+          if (safeContent && !flushChunk(safeContent)) {
+            return { text: fullText, toolCalls: allToolCalls };
+          }
+          continue;
+        }
+
+        // 缓冲区足够大且无特殊标记 — 发送安全部分
+        if (chunkSendBuffer.length > HOLD_BUFFER_SIZE) {
           const sendLength = chunkSendBuffer.length - HOLD_BUFFER_SIZE;
           const toSend = chunkSendBuffer.substring(0, sendLength);
           chunkSendBuffer = chunkSendBuffer.substring(sendLength);
@@ -380,7 +391,6 @@ export async function executeAgentStream(
             return { text: fullText, toolCalls: allToolCalls };
           }
         }
-        // 否则缓冲区太小，继续持有
       }
 
       // 处理工具调用（流式累积参数）
@@ -403,15 +413,23 @@ export async function executeAgentStream(
     }
 
     // 流式结束后：刷新缓冲区中剩余的安全内容
-    if (!dsmlBlocked && chunkSendBuffer) {
-      if (!flushChunk(chunkSendBuffer)) {
-        return { text: fullText, toolCalls: allToolCalls };
+    if (!contentBlocked && chunkSendBuffer) {
+      // 最终刷新前也要检查是否包含 [SENTIMENT]
+      const finalSentimentIdx = chunkSendBuffer.indexOf(sentimentPattern);
+      if (finalSentimentIdx !== -1) {
+        const safeContent = chunkSendBuffer.substring(0, finalSentimentIdx);
+        if (safeContent && !flushChunk(safeContent)) {
+          return { text: fullText, toolCalls: allToolCalls };
+        }
+      } else {
+        if (!flushChunk(chunkSendBuffer)) {
+          return { text: fullText, toolCalls: allToolCalls };
+        }
       }
       chunkSendBuffer = '';
     }
 
     // 检测 DSML 文本格式的函数调用（DeepSeek 原生格式回退）
-    // 当模型输出 <|DSML|function_calls>...</|DSML|function_calls> 作为文本而非 tool_calls 时
     if (pendingToolCalls.size === 0) {
       const dsmlParsed = parseDsmlToolCalls(stepContent);
       if (dsmlParsed && dsmlParsed.toolCalls.length > 0) {
@@ -421,13 +439,9 @@ export async function executeAgentStream(
         if (dsmlStartInFull >= 0) {
           fullText = fullText.substring(0, dsmlStartInFull).trim();
         }
-        // Also clean stepContent for the assistant message
         stepContent = dsmlParsed.cleanText;
 
-        // 发送 content_replace 事件，让前端修正已显示的内容（防止残留 DSML 文本）
-        safeEnqueue(encoder.encode(
-          `data: ${JSON.stringify({ type: 'content_replace', agentId, content: fullText })}\n\n`
-        ));
+        // 不再发送 content_replace —— done 事件会提供最终干净内容
 
         // Convert parsed DSML calls to pendingToolCalls
         for (let i = 0; i < dsmlParsed.toolCalls.length; i++) {
@@ -446,7 +460,7 @@ export async function executeAgentStream(
       break;
     }
 
-    // 有工具调用：构建 assistant 消息（包含工具调用信息）
+    // 有工具调用：构建 assistant 消息
     const assistantToolCalls = Array.from(pendingToolCalls.values()).map(tc => ({
       id: tc.id,
       type: 'function' as const,
@@ -503,14 +517,12 @@ export async function executeAgentStream(
         return { text: fullText, toolCalls: allToolCalls };
       }
 
-      // 记录工具调用
       allToolCalls.push({
         toolName: tc.function.name,
         args,
         result: toolResult,
       });
 
-      // 追加 tool 响应到消息历史
       messages.push({
         role: 'tool',
         tool_call_id: tc.id,
@@ -546,7 +558,6 @@ export async function executeAgentStream(
       }
     }
 
-    // 继续循环，让模型基于工具结果生成下一步回复
     console.log(`[agentExecutor] Agent ${agentName}: ${assistantToolCalls.length} tool(s) executed, continuing...`);
   }
 

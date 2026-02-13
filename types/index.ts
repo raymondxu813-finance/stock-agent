@@ -1,4 +1,4 @@
-export type AvatarType = 'sphere' | 'safe' | 'crystal' | 'rocket' | 'lightning' | 'rings';
+export type AvatarType = 'sphere' | 'safe' | 'crystal' | 'rocket' | 'lightning' | 'rings' | 'compass' | 'piggybank' | 'globe' | 'shield' | 'megaphone' | 'radar' | 'microscope' | 'hourglass';
 
 export type Agent = {
   id: string;
@@ -41,17 +41,43 @@ export type AgentComment = {
   completedAt?: number; // 发言完成时间戳（用于显示 HH:mm）
 };
 
+// === 话题维度对比 ===
+export type TopicComparisonItem = {
+  topic: string;                    // 议题/维度名称
+  agentPositions: Array<{           // 各 agent 在此话题上的立场
+    agentName: string;
+    position: string;               // 观点摘要
+  }>;
+  convergenceLevel: 'high' | 'medium' | 'low';  // 趋同度
+};
+
+// === 亮眼观点 ===
+export type HighlightInsight = {
+  content: string;              // 观点描述
+  agentName: string;            // 提出者
+  supportingAgents: string[];   // 认同该观点的其他 agent
+  reason: string;               // 为什么值得关注
+};
+
 export type ConsensusItem = {
   content: string;
   agents: string[];
   percentage: number;
+  strength?: 'strong' | 'medium' | 'weak';  // 共识强度
+  reasoning?: string;                         // 共识依据概述
 };
 
 export type DisagreementItem = {
   topic: string;
   description: string;
+  nature?: 'fundamental' | 'strategic' | 'degree';  // 分歧性质
   supportAgents: Array<{ name: string; color: string }>;
   opposeAgents: Array<{ name: string; color: string }>;
+  sides?: Array<{
+    position: string;
+    agents: Array<{ name: string; color: string }>;
+  }>;
+  rootCause?: string;                                // 分歧根源
 };
 
 export type SentimentSummaryItem = {
@@ -59,7 +85,7 @@ export type SentimentSummaryItem = {
   bullishAgents: string[];  // 看涨的agent名称
   bearishAgents: string[];  // 看跌的agent名称
   neutralAgents: string[];  // 中性的agent名称
-  overallSentiment: 'bullish' | 'bearish' | 'neutral' | 'divided'; // 整体情绪
+  overallSentiment: 'bullish' | 'bearish' | 'neutral'; // 整体情绪（看涨/中性/看跌）
 };
 
 export type RoundData = {
@@ -70,9 +96,11 @@ export type RoundData = {
     consensusLevel: number;
     summary: string;
     newPoints: string[];
+    topicComparisons?: TopicComparisonItem[];   // 话题维度对比
     consensus: ConsensusItem[];
     disagreements: DisagreementItem[];
-    sentimentSummary?: SentimentSummaryItem[]; // 各标的情绪汇总
+    highlights?: HighlightInsight[];             // 亮眼观点
+    sentimentSummary?: SentimentSummaryItem[];   // 情绪汇总
   };
   prompts?: {
     agents: Array<{
@@ -97,9 +125,11 @@ export type ModeratorAnalysis = {
   consensusLevel: number;
   summary: string;
   newPoints: string[];
+  topicComparisons?: TopicComparisonItem[];   // 话题维度对比
   consensus: ConsensusItem[];
   disagreements: DisagreementItem[];
-  sentimentSummary?: SentimentSummaryItem[]; // 各标的情绪汇总
+  highlights?: HighlightInsight[];             // 亮眼观点
+  sentimentSummary?: SentimentSummaryItem[];   // 情绪汇总
 };
 
 export type Discussion = {

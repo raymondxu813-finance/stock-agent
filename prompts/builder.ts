@@ -7,7 +7,7 @@
 
 import type { AgentId } from './roundAgentPrompts';
 import { agentSpeechPromptById, agentReviewPromptById } from './roundAgentPrompts';
-import { agentSubsequentRoundSpeechPromptById, targetedReplyUserPromptTemplate, subsequentRoundReplyUserPromptTemplate } from './subsequentRoundAgentPrompts';
+import { agentSubsequentRoundSpeechPromptById, targetedReplyUserPromptTemplate, subsequentRoundReplyUserPromptTemplate, subsequentRoundSpeechTemplate, subsequentRoundWithUserQuestionTemplate } from './subsequentRoundAgentPrompts';
 import { roundSummaryUserPromptTemplate } from './roundSummaryPrompts';
 import { sessionSummaryUserPromptTemplate } from './sessionSummaryPrompts';
 import { agentDisagreementAnalysisUserPromptTemplate } from './agentDisagreementPrompts';
@@ -166,6 +166,43 @@ export function buildAgentTargetedReplyUserPrompt(
       previous_replies: vars.previous_replies ? `【本轮前几次回复参考】\n${vars.previous_replies}` : '',
     });
   }
+}
+
+// ======================== 第2轮+ 单次发言（新架构） ========================
+
+/**
+ * 第2轮+ 无用户发言：仅回应分歧
+ */
+export interface SubsequentRoundSpeechVars {
+  topic: string;
+  round_index: number;
+  previous_round_speeches: string;
+  my_previous_speech: string;
+}
+
+/**
+ * 构建第2轮+ 无用户发言的 User Prompt
+ */
+export function buildSubsequentRoundSpeechUserPrompt(vars: SubsequentRoundSpeechVars): string {
+  return fillTemplate(subsequentRoundSpeechTemplate, vars as unknown as Record<string, string | number>);
+}
+
+/**
+ * 第2轮+ 有用户发言：回应用户 + 回应分歧
+ */
+export interface SubsequentRoundWithUserQuestionVars {
+  topic: string;
+  round_index: number;
+  user_question: string;
+  previous_round_speeches: string;
+  my_previous_speech: string;
+}
+
+/**
+ * 构建第2轮+ 有用户发言的 User Prompt
+ */
+export function buildSubsequentRoundWithUserQuestionUserPrompt(vars: SubsequentRoundWithUserQuestionVars): string {
+  return fillTemplate(subsequentRoundWithUserQuestionTemplate, vars as unknown as Record<string, string | number>);
 }
 
 /**

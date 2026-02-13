@@ -270,8 +270,9 @@ export class OpenAILLMClient implements LLMClient {
       }
 
       // 根据请求类型调整 max_tokens
+      // JSON（总结）需要更多 tokens 确保完整输出（包含 consensus, conflicts 等字段）
       const effectiveMaxTokens = needsJSON 
-        ? Math.min(this.maxTokens, 1500)
+        ? Math.min(this.maxTokens, 4000)
         : Math.min(this.maxTokens, 1500);
       
       // 如果需要 JSON 格式，确保 prompt 中包含 "json" 关键词

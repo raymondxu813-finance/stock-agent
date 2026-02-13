@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { getSession, restoreSession, buildHistoryText } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
-import { buildAgentSpeechUserPrompt, buildAgentSubsequentRoundSpeechUserPrompt } from '@/prompts/builder';
+import { buildAgentSpeechUserPrompt, buildSubsequentRoundSpeechUserPrompt, buildSubsequentRoundWithUserQuestionUserPrompt } from '@/prompts/builder';
 import { executeAgentStream } from '@/lib/agentExecutor';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
 import { parseSentimentBlock } from '@/lib/utils';
@@ -11,11 +11,21 @@ const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工�
 
 /**
  * 流式获取单个 Agent 的发言（Server-Sent Events）
+ * 
+ * 新架构：每轮每个Agent只发言1次
+ * - 第1轮：针对话题阐述观点
+ * - 第2轮+ 有用户发言：回应用户提问 + 回应上一轮分歧
+ * - 第2轮+ 无用户发言：仅回应上一轮分歧
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionId, agentId, roundIndex, sessionData, previousRoundComments } = body;
+    const { 
+      sessionId, agentId, roundIndex, sessionData, 
+      previousRoundComments,
+      userQuestion,         // 新增：用户提问内容（可选）
+      userMentionedAgentIds // 新增：用户@的Agent ID列表（可选）
+    } = body;
 
     if (!sessionId || !agentId || !roundIndex) {
       return new Response(
@@ -50,15 +60,15 @@ export async function POST(request: NextRequest) {
     // 构建历史记录文本
     const historyText = buildHistoryText(session.rounds);
 
-    // 根据轮次选择不同的prompt构建方式
+    // 根据轮次和是否有用户提问，选择不同的prompt构建方式
     let systemPrompt: string;
     let userPrompt: string;
     let targetAgentId: string | undefined;
     let targetAgentName: string | undefined;
 
     if (roundIndex > 1 && previousRoundComments && Array.isArray(previousRoundComments) && previousRoundComments.length > 0) {
-      // 第二轮及后续轮次：使用前端传来的上一轮原始发言数据
-      console.log(`[API /api/agents/speech/stream] Round ${roundIndex}: Using previousRoundComments from frontend, count: ${previousRoundComments.length}`);
+      // ====== 第2轮及后续轮次 ======
+      console.log(`[API /api/agents/speech/stream] Round ${roundIndex}: agent=${agent.name}, hasUserQuestion=${!!userQuestion}`);
       
       // 构建上一轮所有agent的发言内容
       const previousRoundSpeeches = previousRoundComments
@@ -69,42 +79,56 @@ export async function POST(request: NextRequest) {
       const myPreviousSpeech = previousRoundComments.find(
         (c: any) => c.agentId === agentId
       );
-      
       const myPreviousContent = myPreviousSpeech?.content || '（上一轮未发言）';
-      
-      // 使用第二轮及后续轮次的专用prompt模板
-      userPrompt = buildAgentSubsequentRoundSpeechUserPrompt(agentId as AgentId, {
-        topic: session.topicTitle,
-        description: '', // 第二轮不需要话题背景，避免干扰
-        history: '', // 第二轮不需要历史记录，避免干扰
-        round_index: roundIndex,
-        previous_round_index: roundIndex - 1,
-        previous_round_speeches: previousRoundSpeeches,
-        my_previous_speech: myPreviousContent,
-      });
-      
-      // 完全替换system prompt，要求针对分歧agent回应
-      systemPrompt = `你是${agent.name}。你正在参与一场多人讨论的后续轮次。
+
+      if (userQuestion && userQuestion.trim()) {
+        // 有用户发言：回应用户 + 回应分歧
+        userPrompt = buildSubsequentRoundWithUserQuestionUserPrompt({
+          topic: session.topicTitle,
+          round_index: roundIndex,
+          user_question: userQuestion.trim(),
+          previous_round_speeches: previousRoundSpeeches,
+          my_previous_speech: myPreviousContent,
+        });
+
+        systemPrompt = `你是${agent.name}。你正在参与一场多人讨论的后续轮次。用户（投资者）向你提出了问题。
+
+规则：
+1. 先回应用户的提问（用 @你 提及用户），结合你的专业视角给出回答
+2. 再回应跟你有明确分歧的Agent（用 @Agent名称），说清分歧、亮出看法
+3. 200字以内，简洁有力
+4. 像跟同行聊天一样自然` + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
+
+        console.log(`[API /api/agents/speech/stream] Using SUBSEQUENT_WITH_USER prompt for ${agent.name}`);
+      } else {
+        // 无用户发言：仅回应分歧
+        userPrompt = buildSubsequentRoundSpeechUserPrompt({
+          topic: session.topicTitle,
+          round_index: roundIndex,
+          previous_round_speeches: previousRoundSpeeches,
+          my_previous_speech: myPreviousContent,
+        });
+
+        systemPrompt = `你是${agent.name}。你正在参与一场多人讨论的后续轮次。
 
 规则：
 1. 只回应跟你有明确、实质性分歧的Agent，观点相近的不用回应
 2. 用 @Agent名称 提及对方，说清楚分歧在哪，亮出你的看法
 3. 不要笼统总结话题，只聚焦具体分歧
 4. 200字以内，抓重点，说人话，像跟同行聊天一样自然` + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
-      
-      console.log(`[API /api/agents/speech/stream] Using SUBSEQUENT round prompt for ${agent.name} in round ${roundIndex}`);
-      console.log(`[API /api/agents/speech/stream] User prompt preview (first 500 chars):`, userPrompt.substring(0, 500));
-      console.log(`[API /api/agents/speech/stream] System prompt preview (first 300 chars):`, systemPrompt.substring(0, 300));
+
+        console.log(`[API /api/agents/speech/stream] Using SUBSEQUENT_NO_USER prompt for ${agent.name}`);
+      }
     } else {
-      // 第一轮：使用原来的prompt模板 + 情绪输出指令 + 工具使用提示
+      // ====== 第1轮：针对话题阐述观点 ======
       systemPrompt = agent.systemPrompt + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
       userPrompt = buildAgentSpeechUserPrompt(agentId as AgentId, {
         topic: session.topicTitle,
         description: session.topicDescription,
         history: historyText,
         round_index: roundIndex,
-        previous_round_context: '', // 第一轮没有上一轮内容
-        debate_instruction: '', // 第一轮没有辩论指令
+        previous_round_context: '',
+        debate_instruction: '',
       });
     }
 
@@ -114,24 +138,21 @@ export async function POST(request: NextRequest) {
       async start(controller) {
         const encoder = new TextEncoder();
         
-        // 监听请求取消
         request.signal.addEventListener('abort', () => {
           isCancelled = true;
           try {
             controller.close();
           } catch (e) {
-            // Controller可能已经关闭，忽略错误
+            // Controller可能已经关闭
           }
         });
         
-        // 安全的enqueue函数，检查controller状态
         const safeEnqueue = (data: Uint8Array) => {
           if (isCancelled) return false;
           try {
             controller.enqueue(data);
             return true;
           } catch (error: any) {
-            // Controller已关闭或处于无效状态
             if (error?.code === 'ERR_INVALID_STATE' || error?.message?.includes('closed')) {
               isCancelled = true;
               return false;
@@ -143,10 +164,9 @@ export async function POST(request: NextRequest) {
         try {
           // 发送初始信息
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', agentId, agentName: agent.name })}\n\n`))) {
-            return; // 请求已取消
+            return;
           }
           
-          // 确保 systemPrompt 和 userPrompt 都有值
           if (!systemPrompt || !userPrompt) {
             throw new Error(`Missing prompt: systemPrompt=${!!systemPrompt}, userPrompt=${!!userPrompt}`);
           }
@@ -160,28 +180,31 @@ export async function POST(request: NextRequest) {
             safeEnqueue,
           );
           
-          // 如果请求已取消，不发送完成信息
           if (isCancelled) return;
           
-          // 如果是第二轮及后续轮次，尝试从发言内容中提取@的agent名称
+          // 提取@的agent名称
           if (roundIndex > 1 && fullContent) {
-            // 查找 @Agent名称 的模式
-            const mentionMatch = fullContent.match(/@([^，。\s\n]+)/);
-            if (mentionMatch && mentionMatch[1]) {
-              const mentionedAgentName = mentionMatch[1].trim();
-              // 查找对应的agent
-              const mentionedAgent = session.agents.find(a => a.name === mentionedAgentName);
-              if (mentionedAgent) {
-                targetAgentId = mentionedAgent.id;
-                targetAgentName = mentionedAgent.name;
+            // 检查是否@了用户（@你）
+            if (fullContent.includes('@你')) {
+              targetAgentName = '你';
+            } else {
+              // 查找 @Agent名称
+              const mentionMatch = fullContent.match(/@([^，。\s\n]+)/);
+              if (mentionMatch && mentionMatch[1]) {
+                const mentionedAgentName = mentionMatch[1].trim();
+                const mentionedAgent = session.agents.find(a => a.name === mentionedAgentName);
+                if (mentionedAgent) {
+                  targetAgentId = mentionedAgent.id;
+                  targetAgentName = mentionedAgent.name;
+                }
               }
             }
           }
           
-          // 从发言内容中解析 [SENTIMENT] 块，分离正文和情绪数据
+          // 从发言内容中解析 [SENTIMENT] 块
           const { cleanContent, sentiments } = parseSentimentBlock(fullContent);
           
-          // 发送完成信息（包含prompts和工具调用记录用于持久化）
+          // 发送完成信息
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ 
             type: 'done', 
             agentId, 
@@ -199,7 +222,7 @@ export async function POST(request: NextRequest) {
           
           controller.close();
         } catch (error) {
-          if (isCancelled) return; // 请求已取消，忽略错误
+          if (isCancelled) return;
           
           console.error('[API /api/agents/speech/stream] Error:', error);
           const errorMessage = error instanceof Error ? error.message : 'Failed to generate speech';
@@ -207,7 +230,7 @@ export async function POST(request: NextRequest) {
             safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`));
             controller.close();
           } catch (e) {
-            // Controller可能已关闭，忽略
+            // Controller可能已关闭
           }
         }
       },

@@ -1,12 +1,18 @@
 import { NextRequest } from 'next/server';
-import { getSession, restoreSession, buildAgentsBriefList, parseRoundSummary } from '@/lib/discussionService';
+import { getSession, restoreSession, buildAgentsBriefList } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildRoundSummaryUserPrompt } from '@/prompts/builder';
 import { roundSummarySystemPromptTemplate } from '@/prompts/roundSummaryPrompts';
 import { llmClient } from '@/lib/llmClient';
+import { getCurrentStreamingSection, convertModeratorTextToAnalysis, type ModeratorSection } from '@/lib/utils';
 
 /**
  * 流式生成本轮讨论的总结（Server-Sent Events）
+ * 
+ * 改进：
+ * - 使用结构化文本格式（带【段落】标记），不再使用 JSON
+ * - 流式输出时发送 section_change 事件，前端可逐段显示
+ * - 完成后解析文本转换为 ModeratorAnalysis 结构
  */
 export async function POST(request: NextRequest) {
   try {
@@ -34,15 +40,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 构造发言和互评文本（进一步缩短以提升速度）
+    // 构造发言文本
     const truncateText = (text: string | undefined | null, maxLength: number = 2000): string => {
-      // 确保 text 是字符串类型
       const textStr = String(text || '');
       if (textStr.length <= maxLength) return textStr;
       return textStr.substring(0, maxLength) + '\n\n[内容已截断]';
     };
 
-    // 处理观点阐述
+    // 处理观点阐述（本轮Agent发言）
     const currentRoundAgentsSpeeches = agentsSpeeches && Array.isArray(agentsSpeeches) && agentsSpeeches.length > 0
       ? agentsSpeeches
           .map((s: any) => {
@@ -53,7 +58,7 @@ export async function POST(request: NextRequest) {
           .join('\n\n')
       : '';
 
-    // 处理互评（旧逻辑兼容）
+    // 处理互评（旧逻辑兼容，新架构不再使用）
     const currentRoundAgentsReviews = agentsReviews && Array.isArray(agentsReviews) && agentsReviews.length > 0
       ? agentsReviews
           .map((r: any) => {
@@ -64,7 +69,7 @@ export async function POST(request: NextRequest) {
           .join('\n\n')
       : '';
 
-    // 处理针对性回复（新逻辑）
+    // 处理针对性回复（旧逻辑兼容）
     const currentRoundAgentsRepliesText = agentsReplies && Array.isArray(agentsReplies) && agentsReplies.length > 0
       ? agentsReplies
           .map((r: any) => {
@@ -76,7 +81,7 @@ export async function POST(request: NextRequest) {
           .join('\n\n')
       : '';
 
-    // 用户提问上下文（自由提问 Q&A 场景）
+    // 用户提问上下文
     const userQuestionContext = userQuestion
       ? `【用户提问】\n${userQuestion}\n\n---\n\n`
       : '';
@@ -89,9 +94,8 @@ export async function POST(request: NextRequest) {
       currentRoundAgentsRepliesText,
     ].filter(Boolean).join('\n\n---\n\n');
 
-    // 如果完全没有内容，使用默认文本
     const finalAgentsSpeeches = allDiscussionContent || '本轮暂无发言内容。';
-    const finalAgentsReviews = currentRoundAgentsRepliesText || currentRoundAgentsReviews || '本轮暂无互评/回复内容。';
+    const finalAgentsReviews = currentRoundAgentsRepliesText || currentRoundAgentsReviews || '';
 
     // 生成总结
     const agentsBriefList = buildAgentsBriefList(session.agents);
@@ -106,7 +110,7 @@ export async function POST(request: NextRequest) {
       current_round_agents_reviews: finalAgentsReviews,
     });
     
-    // 保存主持人prompts到session（用于持久化）
+    // 保存主持人prompts到session
     if (!session.moderatorPrompts) {
       session.moderatorPrompts = {};
     }
@@ -121,24 +125,21 @@ export async function POST(request: NextRequest) {
       async start(controller) {
         const encoder = new TextEncoder();
         
-        // 监听请求取消
         request.signal.addEventListener('abort', () => {
           isCancelled = true;
           try {
             controller.close();
           } catch (e) {
-            // Controller可能已经关闭，忽略错误
+            // Controller可能已经关闭
           }
         });
         
-        // 安全的enqueue函数，检查controller状态
         const safeEnqueue = (data: Uint8Array) => {
           if (isCancelled) return false;
           try {
             controller.enqueue(data);
             return true;
           } catch (error: any) {
-            // Controller已关闭或处于无效状态
             if (error?.code === 'ERR_INVALID_STATE' || error?.message?.includes('closed')) {
               isCancelled = true;
               return false;
@@ -150,33 +151,112 @@ export async function POST(request: NextRequest) {
         try {
           // 发送初始信息
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'start', roundIndex })}\n\n`))) {
-            return; // 请求已取消
+            return;
           }
           
           let fullContent = '';
+          let currentSection: ModeratorSection | null = null;
           
-          // 调用流式生成方法
+          // 使用纯文本流式输出（不再使用 JSON 模式）
           await llmClient.generateStream(systemPrompt, userPrompt, undefined, (chunk: string) => {
-            if (isCancelled) return; // 请求已取消，停止处理
+            if (isCancelled) return;
             fullContent += chunk;
-            // 发送每个数据块
-            if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`))) {
-              return; // Controller已关闭，停止处理
+            
+            // 检测段落切换
+            const newSection = getCurrentStreamingSection(fullContent);
+            if (newSection && newSection !== currentSection) {
+              currentSection = newSection;
+              // 发送段落切换事件
+              safeEnqueue(encoder.encode(
+                `data: ${JSON.stringify({ type: 'section_change', section: currentSection })}\n\n`
+              ));
             }
+            
+            // 发送内容块（附带当前段落信息）
+            safeEnqueue(encoder.encode(
+              `data: ${JSON.stringify({ type: 'chunk', content: chunk, section: currentSection })}\n\n`
+            ));
           });
           
-          // 如果请求已取消，不继续处理
           if (isCancelled) return;
           
-          // 解析总结
-          console.log('[API /api/rounds/summary/stream] Summary response received, length:', fullContent.length);
-          const roundSummary = parseRoundSummary(fullContent);
-          console.log('[API /api/rounds/summary/stream] Summary parsed successfully');
+          // 解析结构化文本为 ModeratorAnalysis
+          console.log('[API /api/rounds/summary/stream] Summary text received, length:', fullContent.length);
+          const totalAgents = session.agents.length;
+          const roundSummary = convertModeratorTextToAnalysis(fullContent, roundIndex, totalAgents);
+          console.log('[API /api/rounds/summary/stream] Summary parsed, consensusLevel:', roundSummary.consensusLevel);
           
-          // 保存总结到 session
-          session.rounds.push(roundSummary);
+          // 保存总结到 session（转换为兼容格式，包含 v2 新字段）
+          // agentsSummary: 从 topicComparisons 构建每个 agent 的观点摘要（如有），否则 fallback 到 newPoints
+          const agentsSummary = (() => {
+            if (roundSummary.topicComparisons && roundSummary.topicComparisons.length > 0) {
+              // 按 agent 聚合各维度的观点
+              const agentMap = new Map<string, string[]>();
+              for (const tc of roundSummary.topicComparisons) {
+                for (const ap of tc.agentPositions) {
+                  if (!agentMap.has(ap.agentName)) agentMap.set(ap.agentName, []);
+                  agentMap.get(ap.agentName)!.push(`${tc.topic}: ${ap.position}`);
+                }
+              }
+              return Array.from(agentMap.entries()).map(([name, points]) => {
+                const agent = session.agents.find((a: any) => a.name === name);
+                return {
+                  agentId: agent?.id || name,
+                  agentName: name,
+                  keyPoints: points,
+                };
+              });
+            }
+            // Fallback: newPoints（维度名称列表）
+            return roundSummary.newPoints.map((point: string, i: number) => ({
+              agentId: session.agents[i]?.id || `agent_${i}`,
+              agentName: session.agents[i]?.name || `Agent ${i}`,
+              keyPoints: [point],
+            }));
+          })();
+
+          // conflicts: 保留 v2 sides 的完整观点文本
+          const conflicts = roundSummary.disagreements.map((d: any) => {
+            const positions: Array<{ agentName: string; position: string }> = [];
+            if (d.sides && d.sides.length > 0) {
+              for (const side of d.sides) {
+                for (const a of (side.agents || [])) {
+                  positions.push({ agentName: a.name, position: side.position });
+                }
+              }
+            } else {
+              for (const a of (d.supportAgents || [])) {
+                positions.push({ agentName: a.name, position: '支持' });
+              }
+              for (const a of (d.opposeAgents || [])) {
+                positions.push({ agentName: a.name, position: '反对' });
+              }
+            }
+            return { issue: d.topic, positions };
+          });
+
+          session.rounds.push({
+            roundIndex,
+            topicTitle: session.topicTitle,
+            consensusLevel: roundSummary.consensusLevel,
+            overallSummary: roundSummary.summary,
+            agentsSummary,
+            topicComparisons: roundSummary.topicComparisons,
+            consensus: roundSummary.consensus.map((c: any) => ({
+              point: c.content,
+              supportingAgents: c.agents,
+              supportCount: c.agents.length,
+              totalAgents,
+            })),
+            conflicts,
+            highlights: roundSummary.highlights,
+            insights: [],
+            openQuestions: [],
+            nextRoundSuggestions: [],
+            sentimentSummary: roundSummary.sentimentSummary,
+          });
           
-          // 发送完成信息和解析后的总结（包含主持人prompts）
+          // 发送完成信息（包含解析后的结构化数据）
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ 
             type: 'done', 
             roundIndex,
@@ -192,7 +272,7 @@ export async function POST(request: NextRequest) {
           
           controller.close();
         } catch (error) {
-          if (isCancelled) return; // 请求已取消，忽略错误
+          if (isCancelled) return;
           
           console.error('[API /api/rounds/summary/stream] Error:', error);
           const errorMessage = error instanceof Error ? error.message : 'Failed to generate summary';
@@ -200,7 +280,7 @@ export async function POST(request: NextRequest) {
             safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`));
             controller.close();
           } catch (e) {
-            // Controller可能已关闭，忽略
+            // Controller可能已关闭
           }
         }
       },

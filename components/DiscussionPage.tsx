@@ -2,8 +2,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, X, FileText, SendHorizontal, Check, AlertCircle, Lightbulb } from 'lucide-react';
-import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord } from '@/types';
+import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
+import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
 import { AgentAvatar } from './AgentAvatar';
 
@@ -15,6 +16,14 @@ const getAvatarType = (agent: Agent): AvatarType => {
   if (agent.id.includes('finance_expert')) return 'safe';
   if (agent.id.includes('senior_stock')) return 'lightning';
   if (agent.id.includes('veteran_stock')) return 'rings';
+  if (agent.id.includes('policy_analyst')) return 'compass';
+  if (agent.id.includes('etf_auntie')) return 'piggybank';
+  if (agent.id.includes('cross_border')) return 'globe';
+  if (agent.id.includes('institutional')) return 'shield';
+  if (agent.id.includes('finance_kol')) return 'megaphone';
+  if (agent.id.includes('risk_controller')) return 'radar';
+  if (agent.id.includes('industry_researcher')) return 'microscope';
+  if (agent.id.includes('cycle_theorist')) return 'hourglass';
   if (agent.id.includes('crystal') || agent.id.includes('analyst')) return 'crystal';
   return 'sphere';
 };
@@ -26,40 +35,111 @@ const getAvatarTypeById = (agentId: string, agents: Agent[]): AvatarType => {
   return 'sphere';
 };
 
-// 从 agent 发言中的 sentiments 汇总构建标的情绪（当 LLM 未生成 sentimentSummary 时用作 fallback）
+// === 标的名称归一化工具 ===
+// 将各种写法（AAPL、苹果、苹果公司、苹果(AAPL)）统一识别为同一标的
+
+/** 提取标的名的"核心key"，用于分组比较 */
+const extractStockCoreKey = (name: string): string => {
+  // 去掉括号内容：苹果(AAPL) → 苹果
+  let key = name.replace(/[（(][^）)]*[）)]/g, '').trim();
+  // 去掉常见后缀：苹果公司 → 苹果
+  key = key.replace(/(公司|集团|控股|股份有限|有限|股份)$/g, '').trim();
+  return key || name;
+};
+
+/** 判断两个标的名是否指向同一实体 */
+const isSameStock = (a: string, b: string): boolean => {
+  if (a === b) return true;
+  const coreA = extractStockCoreKey(a);
+  const coreB = extractStockCoreKey(b);
+  if (coreA === coreB) return true;
+  // 包含关系：苹果 ⊂ 苹果公司
+  if (coreA.includes(coreB) || coreB.includes(coreA)) return true;
+  // 提取纯中文字符比较
+  const cnA = coreA.replace(/[A-Za-z0-9.\s\-]/g, '');
+  const cnB = coreB.replace(/[A-Za-z0-9.\s\-]/g, '');
+  if (cnA && cnB && (cnA === cnB || cnA.includes(cnB) || cnB.includes(cnA))) return true;
+  // 检查括号中的ticker是否匹配另一个纯英文名
+  const tickerA = a.match(/[（(]([A-Za-z0-9.]+)[）)]/)?.[1]?.toUpperCase();
+  const tickerB = b.match(/[（(]([A-Za-z0-9.]+)[）)]/)?.[1]?.toUpperCase();
+  const isEnglishOnly = (s: string) => /^[A-Za-z0-9.\-]+$/.test(s.trim());
+  if (tickerA && isEnglishOnly(b) && tickerA === b.trim().toUpperCase()) return true;
+  if (tickerB && isEnglishOnly(a) && tickerB === a.trim().toUpperCase()) return true;
+  // 纯英文名与括号ticker比较：a="AAPL", b="苹果(AAPL)"
+  if (isEnglishOnly(a) && tickerB && a.trim().toUpperCase() === tickerB) return true;
+  if (isEnglishOnly(b) && tickerA && b.trim().toUpperCase() === tickerA) return true;
+  return false;
+};
+
+/** 从一组同义标的名中选出最佳展示名，格式优先 "中文简称(代码)" */
+const pickCanonicalStockName = (names: string[]): string => {
+  // 1. 优先选已经是 "中文(代码)" 格式的
+  const withTicker = names.filter(n => /[\u4e00-\u9fff]/.test(n) && /[（(][A-Za-z0-9.]+[）)]/.test(n));
+  if (withTicker.length > 0) {
+    // 选中文部分最短的
+    return withTicker.sort((a, b) => extractStockCoreKey(a).length - extractStockCoreKey(b).length)[0];
+  }
+  // 2. 有中文名 + 有纯英文ticker → 组合成 "中文(代码)"
+  const chineseNames = names.filter(n => /[\u4e00-\u9fff]/.test(n));
+  const englishTickers = names.filter(n => /^[A-Za-z0-9.\-]+$/.test(n.trim()));
+  if (chineseNames.length > 0 && englishTickers.length > 0) {
+    const shortCn = chineseNames.sort((a, b) => extractStockCoreKey(a).length - extractStockCoreKey(b).length)[0];
+    return `${extractStockCoreKey(shortCn)}(${englishTickers[0].trim().toUpperCase()})`;
+  }
+  // 3. 只有中文名 → 用最短的中文核心名
+  if (chineseNames.length > 0) {
+    return extractStockCoreKey(chineseNames.sort((a, b) => extractStockCoreKey(a).length - extractStockCoreKey(b).length)[0]);
+  }
+  // 4. 只有英文 → 原样返回
+  return names.sort((a, b) => a.length - b.length)[0];
+};
+
+// 从 agent 发言中的 sentiments 汇总构建情绪（当 LLM 未生成 sentimentSummary 时用作 fallback）
 const buildSentimentSummaryFromAgentData = (
   agentSentiments: Array<{ agentName: string; sentiments?: StockSentiment[] }>
 ): SentimentSummaryItem[] => {
-  // 按标的分组
-  const stockMap = new Map<string, { bullish: string[]; bearish: string[]; neutral: string[] }>();
+  // 使用分组归一化：维护一组"标的簇"
+  type StockGroup = { names: string[]; bullish: string[]; bearish: string[]; neutral: string[] };
+  const groups: StockGroup[] = [];
+
+  const findGroup = (stockName: string): StockGroup | undefined =>
+    groups.find(g => g.names.some(n => isSameStock(n, stockName)));
+
   for (const { agentName, sentiments } of agentSentiments) {
     if (!sentiments || sentiments.length === 0) continue;
     for (const s of sentiments) {
-      const stock = s.stock;
+      const stock = s.stock?.trim();
       if (!stock) continue;
-      if (!stockMap.has(stock)) {
-        stockMap.set(stock, { bullish: [], bearish: [], neutral: [] });
+      let group = findGroup(stock);
+      if (!group) {
+        group = { names: [stock], bullish: [], bearish: [], neutral: [] };
+        groups.push(group);
+      } else if (!group.names.includes(stock)) {
+        group.names.push(stock);
       }
-      const entry = stockMap.get(stock)!;
-      // 每个 agent 对同一标的只计一次（取第一次出现的情绪）
-      if (!entry.bullish.includes(agentName) && !entry.bearish.includes(agentName) && !entry.neutral.includes(agentName)) {
-        if (s.sentiment === 'bullish') entry.bullish.push(agentName);
-        else if (s.sentiment === 'bearish') entry.bearish.push(agentName);
-        else entry.neutral.push(agentName);
+      // 每个 agent 对同一标的只计一次
+      if (!group.bullish.includes(agentName) && !group.bearish.includes(agentName) && !group.neutral.includes(agentName)) {
+        if (s.sentiment === 'bullish') group.bullish.push(agentName);
+        else if (s.sentiment === 'bearish') group.bearish.push(agentName);
+        else group.neutral.push(agentName);
       }
     }
   }
-  if (stockMap.size === 0) return [];
+
+  if (groups.length === 0) return [];
   const result: SentimentSummaryItem[] = [];
-  for (const [stock, { bullish, bearish, neutral }] of stockMap) {
-    const total = bullish.length + bearish.length + neutral.length;
-    let overallSentiment: 'bullish' | 'bearish' | 'neutral' | 'divided' = 'neutral';
-    if (bullish.length > bearish.length && bullish.length > neutral.length) overallSentiment = 'bullish';
-    else if (bearish.length > bullish.length && bearish.length > neutral.length) overallSentiment = 'bearish';
-    else if (neutral.length > bullish.length && neutral.length > bearish.length) overallSentiment = 'neutral';
-    else if (total > 1 && bullish.length !== bearish.length) overallSentiment = bullish.length > bearish.length ? 'bullish' : 'bearish';
-    else if (total > 1) overallSentiment = 'divided';
-    result.push({ stock, bullishAgents: bullish, bearishAgents: bearish, neutralAgents: neutral, overallSentiment });
+  for (const group of groups) {
+    const canonicalName = pickCanonicalStockName(group.names);
+    let overallSentiment: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+    if (group.bullish.length > group.bearish.length) overallSentiment = 'bullish';
+    else if (group.bearish.length > group.bullish.length) overallSentiment = 'bearish';
+    result.push({
+      stock: canonicalName,
+      bullishAgents: group.bullish,
+      bearishAgents: group.bearish,
+      neutralAgents: group.neutral,
+      overallSentiment,
+    });
   }
   return result;
 };
@@ -157,7 +237,7 @@ const ToolGenericIcon = ({ size = 18 }: { size?: number }) => (
   </svg>
 );
 
-/** 标的情绪图标 — 用于标题 */
+/** 情绪图标 — 用于标题 */
 const SentimentChartIcon = ({ size = 18 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
     <rect x="1" y="1" width="18" height="18" rx="5" fill="#FEF2F2" stroke="#FECACA" strokeWidth="0.5" />
@@ -185,99 +265,204 @@ const SentimentAvatar = ({ name, borderColor, agents, size = 28 }: { name: strin
   </div>
 );
 
-/** 情绪汇总区块 — 共享组件，用于主持人分析卡片和分析报告弹窗 */
+/** 情绪汇总区块 — 共享组件
+ *  compact=true: 简约版（信息流），单行列表式，无进度条无头像
+ *  compact=false: 详细版（分析报告），分组列表式，按看涨/看跌/中性展示 agent 头像+名称
+ */
 const SentimentSection = ({ items, agents, compact = false }: { items: SentimentSummaryItem[]; agents: Agent[]; compact?: boolean }) => {
   if (!items || items.length === 0) return null;
-  const avatarSize = compact ? 22 : 24;
+
+  const getSentimentLabel = (s: string) =>
+    s === 'bullish' ? '看涨' : s === 'bearish' ? '看跌' : '中性';
+  const getSentimentTagClass = (s: string) =>
+    s === 'bullish' ? 'bg-red-50 text-[#E05454] border border-red-100' :
+    s === 'bearish' ? 'bg-green-50 text-[#2EA66E] border border-green-100' :
+    'bg-[#F5F5F5] text-[#999999] border border-[#EEEEEE]';
+
+  // === 简约版：每个标的分2行显示 ===
+  // 第1行：涨跌图标(w-4) + 中文股票代号(股票编号)
+  // 第2行：情绪标签 + agent头像（缩进pl-6对齐文字）
+  if (compact) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <SentimentChartIcon size={16} />
+          <h4 className="text-[14px] font-bold text-[#1A1A1A]">情绪</h4>
+        </div>
+        <ul className="space-y-2">
+          {items.map((item, index) => (
+            <li key={index} className="space-y-1">
+              {/* 第1行：涨跌图标 + 股票名字 */}
+              <div className="flex items-center gap-2">
+                <span className="w-4 flex-shrink-0 flex justify-center">
+                  {item.overallSentiment === 'bullish' ? <BullishIcon size={14} /> :
+                   item.overallSentiment === 'bearish' ? <BearishIcon size={14} /> : <NeutralIcon size={14} />}
+                </span>
+                <span className="text-[13px] text-[#333333] leading-relaxed font-bold">{item.stock}</span>
+              </div>
+              {/* 第2行：情绪标签 + agent头像 */}
+              <div className="flex items-center gap-1.5 flex-wrap pl-6">
+                {/* 看涨组 */}
+                {item.bullishAgents.length > 0 && (
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-red-200 bg-red-50">
+                    <span className="text-[10px] text-[#E05454] font-semibold flex-shrink-0">看涨</span>
+                    <div className="flex items-center">
+                      {item.bullishAgents.map((name, i) => {
+                        const agent = agents.find(a => a.name === name);
+                        return agent ? (
+                          <span key={`b-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 看涨`}>
+                            <AgentAvatar type={getAvatarType(agent)} size={20} />
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  </div>
+                )}
+                {/* 中性组 */}
+                {item.neutralAgents.length > 0 && (
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-[#E0E0E0] bg-[#F5F5F5]">
+                    <span className="text-[10px] text-[#999999] font-semibold flex-shrink-0">中性</span>
+                    <div className="flex items-center">
+                      {item.neutralAgents.map((name, i) => {
+                        const agent = agents.find(a => a.name === name);
+                        return agent ? (
+                          <span key={`n-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 中性`}>
+                            <AgentAvatar type={getAvatarType(agent)} size={20} />
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  </div>
+                )}
+                {/* 看跌组 */}
+                {item.bearishAgents.length > 0 && (
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-green-200 bg-green-50">
+                    <span className="text-[10px] text-[#2EA66E] font-semibold flex-shrink-0">看跌</span>
+                    <div className="flex items-center">
+                      {item.bearishAgents.map((name, i) => {
+                        const agent = agents.find(a => a.name === name);
+                        return agent ? (
+                          <span key={`e-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 看跌`}>
+                            <AgentAvatar type={getAvatarType(agent)} size={20} />
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  // === 详细版：分组列表，带情绪分布条 ===
   return (
-    <div className="space-y-3">
-      {/* Section Title */}
-      <div className="flex items-center gap-2">
-        <SentimentChartIcon size={compact ? 18 : 20} />
-        <h4 className={`${compact ? 'text-[14px]' : 'text-[15px]'} font-bold text-black`}>标的情绪</h4>
+    <div className="mb-6">
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className="w-7 h-7 rounded-lg bg-red-50 flex items-center justify-center">
+          <SentimentChartIcon size={16} />
+        </div>
+        <h4 className="text-[16px] font-bold text-[#1A1A1A]">情绪</h4>
       </div>
 
-      {/* Stock Cards */}
-      {items.map((item, index) => {
-        const total = item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length;
-        const bullishPct = total > 0 ? (item.bullishAgents.length / total) * 100 : 0;
-        const neutralPct = total > 0 ? (item.neutralAgents.length / total) * 100 : 0;
-        const bearishPct = total > 0 ? (item.bearishAgents.length / total) * 100 : 0;
+      <div className="space-y-3">
+        {items.map((item, index) => {
+          const total = item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length;
+          return (
+            <div key={index} className="relative rounded-2xl border border-[#F0F0F0] overflow-hidden bg-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+              <div className={`absolute top-0 bottom-0 left-0 w-[3px] ${
+                item.overallSentiment === 'bullish' ? 'bg-gradient-to-b from-[#E05454] to-[#FF7875]' :
+                item.overallSentiment === 'bearish' ? 'bg-gradient-to-b from-[#2EA66E] to-[#52C41A]' :
+                'bg-gradient-to-b from-[#999999] to-[#BBBBBB]'
+              }`} />
+              <div className="px-4 pl-5 py-3.5">
+                {/* Header */}
+                <div className="flex items-center gap-2.5 mb-3">
+                  <span className="flex-shrink-0">
+                    {item.overallSentiment === 'bullish' ? <BullishIcon size={16} /> :
+                     item.overallSentiment === 'bearish' ? <BearishIcon size={16} /> : <NeutralIcon size={16} />}
+                  </span>
+                  <span className="text-[14px] text-[#333333] font-bold">{item.stock}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${getSentimentTagClass(item.overallSentiment)}`}>
+                    {getSentimentLabel(item.overallSentiment)}
+                  </span>
+                </div>
 
-        return (
-          <div key={index} className="bg-white rounded-2xl border border-[#F0F0F0] overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.04)]">
-            {/* Stock Header Row */}
-            <div className="px-4 pt-3.5 pb-2.5 flex items-center gap-2.5">
-              <span className="flex-shrink-0">
-                {item.overallSentiment === 'bullish' ? <BullishIcon size={16} /> :
-                 item.overallSentiment === 'bearish' ? <BearishIcon size={16} /> :
-                 item.overallSentiment === 'divided' ? <DividedIcon size={16} /> : <NeutralIcon size={16} />}
-              </span>
-              <span className="text-[14px] font-bold text-black">{item.stock}</span>
-              <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
-                item.overallSentiment === 'bullish' ? 'bg-red-50 text-[#E05454] border border-red-100' :
-                item.overallSentiment === 'bearish' ? 'bg-green-50 text-[#2EA66E] border border-green-100' :
-                item.overallSentiment === 'divided' ? 'bg-amber-50 text-amber-600 border border-amber-100' :
-                'bg-[#F5F5F5] text-[#999999] border border-[#EEEEEE]'
-              }`}>
-                {item.overallSentiment === 'bullish' ? '看涨' :
-                 item.overallSentiment === 'bearish' ? '看跌' :
-                 item.overallSentiment === 'divided' ? '多空分歧' : '中性'}
-              </span>
-            </div>
+                {/* Sentiment Distribution Bar */}
+                {total > 0 && (
+                  <div className="mb-3">
+                    <div className="flex h-2 rounded-full overflow-hidden bg-[#F5F5F5]">
+                      {item.bullishAgents.length > 0 && (
+                        <div className="bg-gradient-to-r from-[#E05454] to-[#FF7875] transition-all duration-500" style={{ width: `${(item.bullishAgents.length / total) * 100}%` }} />
+                      )}
+                      {item.neutralAgents.length > 0 && (
+                        <div className="bg-gradient-to-r from-[#D5D5D5] to-[#E0E0E0] transition-all duration-500" style={{ width: `${(item.neutralAgents.length / total) * 100}%` }} />
+                      )}
+                      {item.bearishAgents.length > 0 && (
+                        <div className="bg-gradient-to-r from-[#2EA66E] to-[#52C41A] transition-all duration-500" style={{ width: `${(item.bearishAgents.length / total) * 100}%` }} />
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between mt-1.5">
+                      {item.bullishAgents.length > 0 && <span className="text-[9px] text-[#E05454] font-bold">看涨 {item.bullishAgents.length}</span>}
+                      {item.neutralAgents.length > 0 && <span className="text-[9px] text-[#999999] font-bold">中性 {item.neutralAgents.length}</span>}
+                      {item.bearishAgents.length > 0 && <span className="text-[9px] text-[#2EA66E] font-bold">看跌 {item.bearishAgents.length}</span>}
+                    </div>
+                  </div>
+                )}
 
-            {/* Sentiment Bar + Avatars aligned below */}
-            <div className="px-4 pb-4">
-              {/* Progress Bar */}
-              <div className="h-2 bg-[#F0F0F0] rounded-full overflow-hidden flex">
-                {bullishPct > 0 && (
-                  <div className="h-full" style={{ width: `${bullishPct}%`, background: 'linear-gradient(90deg, #EF4444, #F87171)', borderRadius: bearishPct === 0 && neutralPct === 0 ? '9999px' : '9999px 0 0 9999px' }} />
-                )}
-                {neutralPct > 0 && (
-                  <div className="h-full" style={{ width: `${neutralPct}%`, background: '#D4D4D4', borderRadius: bullishPct === 0 && bearishPct === 0 ? '9999px' : bullishPct === 0 ? '9999px 0 0 9999px' : bearishPct === 0 ? '0 9999px 9999px 0' : '0' }} />
-                )}
-                {bearishPct > 0 && (
-                  <div className="h-full" style={{ width: `${bearishPct}%`, background: 'linear-gradient(90deg, #4ADE80, #22C55E)', borderRadius: bullishPct === 0 && neutralPct === 0 ? '9999px' : '0 9999px 9999px 0' }} />
-                )}
+                {/* Agent Groups */}
+                <div className="space-y-2">
+                  {/* 看涨 */}
+                  {item.bullishAgents.length > 0 && (
+                    <div className="flex items-start gap-2">
+                      <span className="text-[10px] text-[#E05454] font-bold w-7 flex-shrink-0 pt-1">看涨</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {item.bullishAgents.map((name, i) => (
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-red-50/80 rounded-full border border-red-100/80">
+                            <SentimentAvatar name={name} borderColor="#EF4444" agents={agents} size={18} />
+                            <span className="text-[10px] text-[#E05454] font-semibold">{name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* 看跌 */}
+                  {item.bearishAgents.length > 0 && (
+                    <div className="flex items-start gap-2">
+                      <span className="text-[10px] text-[#2EA66E] font-bold w-7 flex-shrink-0 pt-1">看跌</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {item.bearishAgents.map((name, i) => (
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-green-50/80 rounded-full border border-green-100/80">
+                            <SentimentAvatar name={name} borderColor="#22C55E" agents={agents} size={18} />
+                            <span className="text-[10px] text-[#2EA66E] font-semibold">{name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* 中性 */}
+                  {item.neutralAgents.length > 0 && (
+                    <div className="flex items-start gap-2">
+                      <span className="text-[10px] text-[#999999] font-bold w-7 flex-shrink-0 pt-1">中性</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {item.neutralAgents.map((name, i) => (
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-[#F5F5F5]/80 rounded-full border border-[#EEEEEE]">
+                            <SentimentAvatar name={name} borderColor="#AAAAAA" agents={agents} size={18} />
+                            <span className="text-[10px] text-[#999999] font-semibold">{name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-
-              {/* Avatars Row — aligned under corresponding bar segments */}
-              <div className="flex mt-2.5" style={{ minHeight: avatarSize + 4 }}>
-                {/* Bullish segment avatars */}
-                {bullishPct > 0 && (
-                  <div className="flex justify-center" style={{ width: `${bullishPct}%` }}>
-                    <div className="flex -space-x-1.5">
-                      {item.bullishAgents.map((name, i) => (
-                        <SentimentAvatar key={i} name={name} borderColor="#EF4444" agents={agents} size={avatarSize} />
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {/* Neutral segment avatars */}
-                {neutralPct > 0 && (
-                  <div className="flex justify-center" style={{ width: `${neutralPct}%` }}>
-                    <div className="flex -space-x-1.5">
-                      {item.neutralAgents.map((name, i) => (
-                        <SentimentAvatar key={i} name={name} borderColor="#AAAAAA" agents={agents} size={avatarSize} />
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {/* Bearish segment avatars */}
-                {bearishPct > 0 && (
-                  <div className="flex justify-center" style={{ width: `${bearishPct}%` }}>
-                    <div className="flex -space-x-1.5">
-                      {item.bearishAgents.map((name, i) => (
-                        <SentimentAvatar key={i} name={name} borderColor="#22C55E" agents={agents} size={avatarSize} />
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 };
@@ -356,16 +541,19 @@ const getMentionTextColor = (agentColor: string): string => {
 const renderContentWithMentions = (content: string, agents: Agent[]): React.ReactNode => {
   if (!content || agents.length === 0) return content;
 
-  // 构建 agent 名称列表（按长度降序，优先匹配长名称）
+  // 构建 agent 名称列表（按长度降序，优先匹配长名称）+ "你" 用于用户提及
   const agentNames = agents
     .map(a => a.name)
     .filter(Boolean)
     .sort((a, b) => b.length - a.length);
 
-  if (agentNames.length === 0) return content;
+  // 添加"你"作为可识别的提及名称（用于 @你 高亮显示）
+  const allNames = [...agentNames, '你'];
 
-  // 构建正则：匹配 @AgentName（贪婪匹配已知名称）
-  const escapedNames = agentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (allNames.length === 0) return content;
+
+  // 构建正则：匹配 @AgentName 和 @你
+  const escapedNames = allNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const mentionRegex = new RegExp(`(@(?:${escapedNames.join('|')}))`, 'g');
 
   const parts = content.split(mentionRegex);
@@ -374,6 +562,14 @@ const renderContentWithMentions = (content: string, agents: Agent[]): React.Reac
   return parts.map((part, idx) => {
     if (part.startsWith('@')) {
       const mentionedName = part.slice(1);
+      if (mentionedName === '你') {
+        // 用户提及：蓝色高亮
+        return (
+          <span key={idx} className="font-semibold text-blue-600">
+            {part}
+          </span>
+        );
+      }
       const matchedAgent = agents.find(a => a.name === mentionedName);
       if (matchedAgent) {
         const colorClass = getMentionTextColor(matchedAgent.color || '');
@@ -435,6 +631,7 @@ type DiscussionPageProps = {
 
 export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: DiscussionPageProps) {
   const [showSummary, setShowSummary] = useState(false);
+  const [summaryRoundIndex, setSummaryRoundIndex] = useState<number | null>(null); // 分析报告弹窗显示的轮次（null=最新轮）
   const [collapsedSummary, setCollapsedSummary] = useState<Record<number, boolean>>({});
   const [collapsedModerator, setCollapsedModerator] = useState<Record<number, boolean>>({}); // 主持人卡片折叠状态
   const [isLoading, setIsLoading] = useState(false);
@@ -453,6 +650,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   } | null>(null);
   // 用户 Q&A 相关状态
   const [userInput, setUserInput] = useState(''); // 用户输入的文本
+  const [isInputMultiLine, setIsInputMultiLine] = useState(false); // 输入框是否多行
   const [showMentionPopup, setShowMentionPopup] = useState(false); // 是否显示 @-mention 弹窗
   const [activeToolTip, setActiveToolTip] = useState<string | null>(null); // 当前展开的工具提示 key (roundIdx-commentIdx-toolIdx)
   const [mentionFilter, setMentionFilter] = useState(''); // @-mention 过滤关键词
@@ -463,6 +661,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const lastScrollTop = useRef(0);
   const hasStartedRef = useRef(false);
   const isScrollingToBottomRef = useRef(false); // 标记是否正在滚动到底部
+  const isUserInteractingRef = useRef(false); // 用户是否正在触摸/滚轮操作
+  const interactionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 获取所有轮次数据（向后兼容：如果没有 rounds，从 comments 和 moderatorAnalysis 构建）
   const getRounds = (): RoundData[] => {
@@ -548,6 +748,52 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     return () => document.removeEventListener('click', handleClickOutside);
   }, [activeToolTip]);
 
+  // 检测用户主动触摸/滚轮交互，交互期间抑制自动滚动，防止抖动
+  useEffect(() => {
+    const contentElement = contentRef.current;
+    const markInteracting = () => {
+      isUserInteractingRef.current = true;
+      // 清除之前的定时器
+      if (interactionTimerRef.current) clearTimeout(interactionTimerRef.current);
+      // 交互停止 1.2s 后解除抑制
+      interactionTimerRef.current = setTimeout(() => {
+        isUserInteractingRef.current = false;
+      }, 1200);
+    };
+    const markEnd = () => {
+      // touchend/mouseup 后缩短等待时间到 600ms
+      if (interactionTimerRef.current) clearTimeout(interactionTimerRef.current);
+      interactionTimerRef.current = setTimeout(() => {
+        isUserInteractingRef.current = false;
+      }, 600);
+    };
+
+    const opts: AddEventListenerOptions = { passive: true };
+    window.addEventListener('touchstart', markInteracting, opts);
+    window.addEventListener('touchmove', markInteracting, opts);
+    window.addEventListener('touchend', markEnd, opts);
+    window.addEventListener('wheel', markInteracting, opts);
+    if (contentElement) {
+      contentElement.addEventListener('touchstart', markInteracting, opts);
+      contentElement.addEventListener('touchmove', markInteracting, opts);
+      contentElement.addEventListener('touchend', markEnd, opts);
+      contentElement.addEventListener('wheel', markInteracting, opts);
+    }
+    return () => {
+      window.removeEventListener('touchstart', markInteracting);
+      window.removeEventListener('touchmove', markInteracting);
+      window.removeEventListener('touchend', markEnd);
+      window.removeEventListener('wheel', markInteracting);
+      if (contentElement) {
+        contentElement.removeEventListener('touchstart', markInteracting);
+        contentElement.removeEventListener('touchmove', markInteracting);
+        contentElement.removeEventListener('touchend', markEnd);
+        contentElement.removeEventListener('wheel', markInteracting);
+      }
+      if (interactionTimerRef.current) clearTimeout(interactionTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     const handleScroll = () => {
       // 如果正在滚动到底部，暂时不更新按钮状态，避免闪烁
@@ -613,13 +859,17 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   }, [rounds.length, currentRoundComments.size]);
 
   // 当有新内容且用户没有主动向上滚动时，自动滚动到底部
+  // 使用 instant 滚动（直接设置 scrollTop）确保在流式输出时能实时跟随
+  // 注意：依赖 currentRoundComments（而非 .size），因为流式输出更新已有条目内容时 size 不变，
+  // 但每次 setCurrentRoundComments 都创建新 Map 引用，所以 reference 变化能触发 effect
+  // 额外：用户正在触摸/滚轮操作时跳过，防止手指滑动时被强制拉回底部导致抖动
   useEffect(() => {
-    if (!userScrolledUp && contentRef.current) {
-      setTimeout(() => {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-      }, 100);
+    if (userScrolledUp) return;
+    if (isUserInteractingRef.current) return;
+    if (contentRef.current) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [rounds.length, currentRoundComments.size, userScrolledUp, summaryStreamStatus, currentSummaryText]);
+  }, [rounds.length, currentRoundComments, summaryStreamStatus, currentSummaryText]);
 
   // 自动开始第一轮讨论（如果还没有开始）
   useEffect(() => {
@@ -640,6 +890,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   }, [discussion.id]);
 
   // 辅助：处理流式总结并返回结果
+  // 新架构：解析结构化文本（带【段落】标记），逐段打字机显示
   const handleSummaryStream = async (
     summaryResponse: Response,
   ): Promise<{ roundSummary: any; updatedSession: any }> => {
@@ -675,22 +926,19 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           try {
             const data = JSON.parse(line.slice(6));
             
-            if (data.type === 'chunk') {
+            if (data.type === 'section_change') {
+              // 段落切换 → 更新当前流式段落
+              setSummaryStreamStatus('typing');
+            } else if (data.type === 'chunk') {
               // chunk 到达 → typing 状态
               summaryBuffer += data.content;
-              // 从 JSON 流中提取 overallSummary 纯文本展示
-              const extracted = extractSummaryFromJsonStream(summaryBuffer);
-              if (extracted) {
-                setSummaryStreamStatus('typing');
-                setCurrentSummaryText(extracted);
-              } else {
-                // 还没到 overallSummary 字段，保持 thinking 状态
-                setSummaryStreamStatus('thinking');
-              }
+              // 直接使用累积的结构化文本作为流式显示内容
+              setSummaryStreamStatus('typing');
+              setCurrentSummaryText(summaryBuffer);
             } else if (data.type === 'done') {
               roundSummary = data.roundSummary;
               updatedSession = data.session;
-              setCurrentSummaryText(data.roundSummary?.overallSummary || '');
+              setCurrentSummaryText(summaryBuffer);
               setSummaryStreamStatus(null); // 完成
               if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
                 currentRoundPromptsRef.current.moderator = {
@@ -700,7 +948,6 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               }
             } else if (data.type === 'error') {
               setSummaryStreamStatus(null);
-              // 标记错误，循环结束后统一抛出
               roundSummary = null;
               updatedSession = null;
               console.error('Summary stream error:', data.error);
@@ -722,53 +969,117 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   // 辅助：构建 moderatorAnalysis 对象
-  // agentSentiments: 可选参数，用于在 LLM 未生成 sentimentSummary 时从 agent 数据构建 fallback
+  // 兼容新格式（convertModeratorTextToAnalysis 输出）和旧 JSON 格式
   const buildModeratorAnalysis = (roundSummary: any, roundIndex: number, agentSentiments?: Array<{ agentName: string; sentiments?: StockSentiment[] }>) => ({
-    round: roundSummary.roundIndex || roundIndex,
+    round: roundSummary.roundIndex || roundSummary.round || roundIndex,
     consensusLevel: roundSummary.consensusLevel ?? 50,
-    summary: currentSummaryText || roundSummary.overallSummary || '本轮讨论已完成',
-    newPoints: (roundSummary.insights && roundSummary.insights.length > 0) 
-      ? roundSummary.insights.slice(0, 2) 
-      : ['暂无新观点'],
-    consensus: (roundSummary.consensus && roundSummary.consensus.length > 0)
-      ? roundSummary.consensus.map((c: any) => ({
-          content: c.point || '',
-          agents: c.supportingAgents || [],
-          percentage: Math.round(((c.supportCount || 0) / (c.totalAgents || discussion.agents.length)) * 100),
-        }))
-      : [],
-    disagreements: (roundSummary.conflicts && roundSummary.conflicts.length > 0)
-      ? roundSummary.conflicts.map((c: any) => ({
+    summary: roundSummary.summary || roundSummary.overallSummary || '本轮讨论已完成',
+    newPoints: (() => {
+      // 新格式：newPoints 直接来自核心观点/维度名称
+      if (roundSummary.newPoints && roundSummary.newPoints.length > 0 && roundSummary.newPoints[0] !== '暂无新观点') {
+        return roundSummary.newPoints;
+      }
+      // 旧格式：从 insights 提取
+      if (roundSummary.insights && roundSummary.insights.length > 0) {
+        return roundSummary.insights.slice(0, 3);
+      }
+      return ['暂无新观点'];
+    })(),
+    // v2 新增：话题维度对比
+    topicComparisons: roundSummary.topicComparisons || undefined,
+    // v2 新增：亮眼观点
+    highlights: roundSummary.highlights || undefined,
+    consensus: (() => {
+      // 新格式：consensus 已经是 { content, agents, percentage, strength?, reasoning? }
+      if (roundSummary.consensus && roundSummary.consensus.length > 0) {
+        return roundSummary.consensus.map((c: any) => ({
+          content: c.content || c.point || '',
+          agents: c.agents || c.supportingAgents || [],
+          percentage: c.percentage ?? Math.round(((c.supportCount || 0) / (c.totalAgents || discussion.agents.length)) * 100),
+          strength: c.strength || undefined,
+          reasoning: c.reasoning || undefined,
+        }));
+      }
+      return [];
+    })(),
+    disagreements: (() => {
+      // v2 新格式：disagreements 有 { topic, description, nature?, supportAgents, opposeAgents, sides?, rootCause? }
+      if (roundSummary.disagreements && roundSummary.disagreements.length > 0) {
+        return roundSummary.disagreements.map((d: any) => ({
+          topic: d.topic || d.issue || '',
+          description: d.description || '',
+          nature: d.nature || undefined,
+          supportAgents: d.supportAgents || [],
+          opposeAgents: d.opposeAgents || [],
+          sides: d.sides || (() => {
+            // 兼容旧格式的 positions
+            if (d.positions && d.positions.length > 0) {
+              return d.positions.map((p: any) => ({
+                position: p.position || '',
+                agents: [{ name: p.agentName || 'Unknown', color: 'bg-gray-500' }],
+              }));
+            }
+            return undefined;
+          })(),
+          rootCause: d.rootCause || undefined,
+        }));
+      }
+      // 旧格式：从 conflicts 提取
+      if (roundSummary.conflicts && roundSummary.conflicts.length > 0) {
+        return roundSummary.conflicts.map((c: any) => ({
           topic: c.issue || '',
           description: (c.positions && c.positions.length > 0)
             ? c.positions.map((p: any) => `${p.agentName}: ${p.position}`).join('; ')
             : '暂无详细描述',
-          supportAgents: (c.positions && c.positions.length > 0)
-            ? c.positions.slice(0, 2).map((p: any) => ({
-                name: p.agentName || 'Unknown',
-                color: discussion.agents.find(a => a.name === p.agentName)?.color || 'bg-gray-500',
-              }))
-            : [],
+          supportAgents: [],
           opposeAgents: [],
-        }))
-      : [],
-    sentimentSummary: (() => {
-      // 优先使用 LLM 生成的 sentimentSummary
-      if (roundSummary.sentimentSummary && Array.isArray(roundSummary.sentimentSummary) && roundSummary.sentimentSummary.length > 0) {
-        return roundSummary.sentimentSummary.map((s: any) => ({
-          stock: s.stock || '',
-          bullishAgents: s.bullishAgents || [],
-          bearishAgents: s.bearishAgents || [],
-          neutralAgents: s.neutralAgents || [],
-          overallSentiment: s.overallSentiment || 'neutral',
+          sides: c.positions?.map((p: any) => ({
+            position: p.position || '',
+            agents: [{ name: p.agentName || 'Unknown', color: 'bg-gray-500' }],
+          })),
         }));
       }
-      // Fallback: 从 agent 的 sentiments 数据汇总构建
-      if (agentSentiments && agentSentiments.length > 0) {
-        const fallback = buildSentimentSummaryFromAgentData(agentSentiments);
-        if (fallback.length > 0) return fallback;
+      return [];
+    })(),
+    sentimentSummary: (() => {
+      // 始终以 agent 的结构化 sentiments 数据为基准，确保不遗漏任何标的
+      const agentBased = (agentSentiments && agentSentiments.length > 0)
+        ? buildSentimentSummaryFromAgentData(agentSentiments)
+        : [];
+      // LLM 生成的 sentimentSummary 作为补充（可能包含更丰富的归因）
+      const llmBased: SentimentSummaryItem[] = (roundSummary.sentimentSummary && Array.isArray(roundSummary.sentimentSummary) && roundSummary.sentimentSummary.length > 0)
+        ? roundSummary.sentimentSummary.map((s: any) => ({
+            stock: (s.stock || '') as string,
+            bullishAgents: (s.bullishAgents || []) as string[],
+            bearishAgents: (s.bearishAgents || []) as string[],
+            neutralAgents: (s.neutralAgents || []) as string[],
+            overallSentiment: (s.overallSentiment || 'neutral') as SentimentSummaryItem['overallSentiment'],
+          }))
+        : [];
+      // 合并：以 agent 数据为主，LLM 数据补充缺失的标的（使用归一化匹配）
+      const mergedItems: SentimentSummaryItem[] = [...agentBased];
+      for (const llmItem of llmBased) {
+        if (!llmItem.stock) continue;
+        // 检查是否已有归一化后匹配的条目
+        const alreadyExists = mergedItems.some(existing => isSameStock(existing.stock, llmItem.stock));
+        if (!alreadyExists) {
+          // LLM 独有的标的，直接保留（LLM 已按 "中文简称(代码)" 格式输出）
+          mergedItems.push(llmItem);
+        }
       }
-      return undefined;
+      if (mergedItems.length === 0) return undefined;
+      // 统一 overallSentiment 为 3 种（兼容旧数据中的 divided → 按多数决定，平局归 neutral）
+      const normalizeSentiment = (item: SentimentSummaryItem): SentimentSummaryItem => {
+        const raw = item.overallSentiment as string;
+        if (raw === 'divided') {
+          const os = item.bullishAgents.length > item.bearishAgents.length ? 'bullish'
+            : item.bearishAgents.length > item.bullishAgents.length ? 'bearish'
+            : 'neutral';
+          return { ...item, overallSentiment: os };
+        }
+        return item;
+      };
+      return mergedItems.map(normalizeSentiment);
     })(),
   });
 
@@ -887,12 +1198,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
     // 声明在 try 外，以便 catch 中可以访问用于 fallback 保存
     const speeches: Array<{ agentId: string; agentName: string; content: string; sentiments?: StockSentiment[]; toolCalls?: ToolCallRecord[]; completedAt?: number }> = [];
-    let replies: Array<{ agentId: string; agentName: string; content: string; replyRound: number; targetAgentId?: string; targetAgentName?: string; sentiments?: StockSentiment[]; toolCalls?: ToolCallRecord[]; completedAt?: number }> = [];
 
     try {
       const sessionData = discussion.sessionData;
       
       // 步骤 1: 依次请求每个 Agent 的观点阐述（逐个发言，像群聊一样）
+      // 新架构：每个Agent每轮只发言1次，不再有针对性回复阶段
 
       for (const agent of discussion.agents) {
         const response = await fetch('/api/agents/speech/stream', {
@@ -943,7 +1254,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           return newMap;
         });
 
-        // 保存agent的prompts（speech phase）
+        // 保存agent的prompts
         if (speech.systemPrompt && speech.userPrompt) {
           currentRoundPromptsRef.current.agents.push({
             agentId: agent.id,
@@ -956,27 +1267,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         speeches.push({ agentId: agent.id, agentName: agent.name || 'Unknown Agent', content: speech.content, sentiments: speech.sentiments, toolCalls: speech.toolCalls, completedAt: speechCompletedAt });
       }
 
-      // 步骤 2: 每个 Agent 进行 1 次针对性回复（并行）
-      setCurrentRoundStatus('review');
-      
-      replies = await executeReplyBatch(1, 1, speeches, []);
-
-      // 步骤 3: 流式请求总结
+      // 步骤 2: 流式请求主持人总结（不再有针对性回复阶段）
       setCurrentRoundStatus('summary');
       setCurrentSummaryText('');
       
-      // 准备 summary 数据
       const agentsSpeeches = speeches.map(s => ({
         agentId: s.agentId,
         agentName: s.agentName,
         speech: s.content,
-      }));
-
-      const agentsReplies = replies.map(r => ({
-        agentId: r.agentId,
-        agentName: r.agentName,
-        reply: r.content,
-        replyRound: r.replyRound,
       }));
 
       const summaryResponse = await fetch('/api/rounds/summary/stream', {
@@ -987,18 +1285,17 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           roundIndex: 1,
           agentsSpeeches,
           agentsReviews: [],
-          agentsReplies,
+          agentsReplies: [],
           sessionData: sessionData,
         }),
       });
 
       const { roundSummary, updatedSession } = await handleSummaryStream(summaryResponse);
 
-      // 收集所有 comments（speech + reply）— 包含 completedAt 和 toolCalls 用于持久化
+      // 收集所有 comments（仅 speech）
       setCurrentRoundComments(prev => {
         const allComments: AgentComment[] = [];
         
-        // 添加观点阐述
         for (const speech of speeches) {
           const existing = prev.get(speech.agentId);
           allComments.push({
@@ -1014,33 +1311,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           });
         }
 
-        // 添加针对性回复
-        for (const reply of replies) {
-          allComments.push({
-            agentId: reply.agentId,
-            agentName: reply.agentName,
-            agentColor: discussion.agents.find(a => a.id === reply.agentId)?.color || 'bg-gray-500',
-            content: reply.content,
-            expanded: false,
-            type: 'reply',
-            replyRound: 1,
-            targetAgentId: reply.targetAgentId,
-            targetAgentName: reply.targetAgentName,
-            sentiments: reply.sentiments,
-            completedAt: reply.completedAt,
-            toolCalls: dedupToolCalls(reply.toolCalls),
-          });
-        }
-
         // 收集 agent 的 sentiments 数据，用于 sentimentSummary fallback
-        const agentSentimentsForSummary = [
-          ...speeches.map(s => ({ agentName: s.agentName, sentiments: s.sentiments })),
-          ...replies.map(r => ({ agentName: r.agentName, sentiments: r.sentiments })),
-        ];
+        const agentSentimentsForSummary = speeches.map(s => ({ agentName: s.agentName, sentiments: s.sentiments }));
         const moderatorAnalysis = buildModeratorAnalysis(roundSummary, 1, agentSentimentsForSummary);
 
         const firstRound: RoundData = {
-          roundIndex: roundSummary.roundIndex || 1,
+          roundIndex: roundSummary.roundIndex || roundSummary.round || 1,
           comments: allComments,
           moderatorAnalysis,
           prompts: {
@@ -1068,39 +1344,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     } catch (error) {
       console.error('Error starting first round:', error);
 
-      // 如果 speeches 和 replies 已完成但 summary 失败，仍然保存轮次数据（使用默认空分析）
+      // 如果 speeches 已完成但 summary 失败，仍然保存轮次数据
       if (speeches.length > 0) {
         try {
-          const fallbackComments: AgentComment[] = [];
-          for (const speech of speeches) {
-            fallbackComments.push({
-              agentId: speech.agentId,
-              agentName: speech.agentName,
-              agentColor: discussion.agents.find(a => a.id === speech.agentId)?.color || 'bg-gray-500',
-              content: speech.content,
-              expanded: false,
-              type: 'speech',
-              sentiments: speech.sentiments,
-              completedAt: speech.completedAt,
-              toolCalls: dedupToolCalls(speech.toolCalls),
-            });
-          }
-          for (const reply of replies) {
-            fallbackComments.push({
-              agentId: reply.agentId,
-              agentName: reply.agentName,
-              agentColor: discussion.agents.find(a => a.id === reply.agentId)?.color || 'bg-gray-500',
-              content: reply.content,
-              expanded: false,
-              type: 'reply',
-              replyRound: 1,
-              targetAgentId: reply.targetAgentId,
-              targetAgentName: reply.targetAgentName,
-              sentiments: reply.sentiments,
-              completedAt: reply.completedAt,
-              toolCalls: dedupToolCalls(reply.toolCalls),
-            });
-          }
+          const fallbackComments: AgentComment[] = speeches.map(speech => ({
+            agentId: speech.agentId,
+            agentName: speech.agentName,
+            agentColor: discussion.agents.find(a => a.id === speech.agentId)?.color || 'bg-gray-500',
+            content: speech.content,
+            expanded: false,
+            type: 'speech',
+            sentiments: speech.sentiments,
+            completedAt: speech.completedAt,
+            toolCalls: dedupToolCalls(speech.toolCalls),
+          }));
           const fallbackRound: RoundData = {
             roundIndex: 1,
             comments: fallbackComments,
@@ -1120,7 +1377,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
       setCurrentRoundStatus('idle');
       setCurrentSummaryText('');
-      setCurrentRoundComments(new Map()); // 清除流式状态，避免残留
+      setCurrentRoundComments(new Map());
       alert(`讨论出现问题：${error instanceof Error ? error.message : '未知错误'}，已保存已完成的部分。`);
     } finally {
       setIsLoading(false);
@@ -1285,14 +1542,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               // 工具调用开始 → "tool_calling" 状态
               updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'tool_calling', collectedToolCalls, data.toolName);
             } else if (data.type === 'tool_result') {
-              // 工具调用完成 → 记录结果，状态切换为 thinking（等待后续内容）
+              // 工具调用完成 → 记录结果，保持 tool_calling 状态直到文本内容开始流式输出
               collectedToolCalls.push({ toolName: data.toolName, args: data.args || {}, result: data.result });
-              updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'thinking', collectedToolCalls, undefined);
-            } else if (data.type === 'content_replace') {
-              // 后端修正内容（DSML 清理后的干净文本）
-              fullContent = data.content || '';
-              hasReceivedChunk = true;
-              updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'thinking', collectedToolCalls.length > 0 ? collectedToolCalls : undefined, undefined);
+              updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'tool_calling', collectedToolCalls, data.toolName);
             } else if (data.type === 'chunk') {
               const chunkContent = data.content || '';
               fullContent += chunkContent;
@@ -1343,7 +1595,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     return { content: fullContent, targetAgentId, targetAgentName, systemPrompt: savedSystemPrompt, userPrompt: savedUserPrompt, sentiments, toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined };
   };
 
-  // 开始新一轮讨论（第二轮+：2次针对性回复 -> 总结，不再有观点阐述）
+  // 开始新一轮讨论（第二轮+：每个Agent单次发言 -> 总结）
+  // 新架构：不再有针对性回复阶段，Agent在单次发言中组合回应用户+回应分歧
   const startNextRound = async (roundIndex: number, userQuestion?: string, userMentionedAgentIds?: string[]) => {
     if (!discussion.id || !discussion.sessionData || isLoading) return;
 
@@ -1373,10 +1626,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       });
     }
 
+    const speeches: Array<{ agentId: string; agentName: string; content: string; sentiments?: StockSentiment[]; toolCalls?: ToolCallRecord[]; completedAt?: number }> = [];
+
     try {
       const sessionData = discussion.sessionData;
 
-      // 获取上一轮的原始发言数据（包含speech和reply）
+      // 获取上一轮的原始发言数据
       const previousRoundData = rounds.length > 0 ? rounds[rounds.length - 1] : null;
       const previousRoundComments = previousRoundData?.comments?.map(c => ({
         agentId: c.agentId,
@@ -1384,267 +1639,129 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         content: c.content,
       })) || [];
 
-      // ===== Phase 1: 如果有用户提问，先进行 speech 阶段（带工具调用） =====
-      const speeches: Array<{ agentId: string; agentName: string; content: string; sentiments?: StockSentiment[]; toolCalls?: ToolCallRecord[] }> = [];
+      // ===== 每个Agent依次发言（单次speech，包含回应用户+回应分歧） =====
+      setCurrentRoundStatus('speech');
 
-      if (userQuestion) {
-        setCurrentRoundStatus('speech');
-
-        // 调用 /api/user/message/stream 让 agents 回答用户问题
-        const response = await fetch('/api/user/message/stream', {
+      for (const agent of discussion.agents) {
+        const response = await fetch('/api/agents/speech/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sessionId: discussion.id,
-            userMessage: userQuestion,
-            mentionedAgentIds: userMentionedAgentIds && userMentionedAgentIds.length > 0 ? userMentionedAgentIds : undefined,
-            historyContext: buildHistoryContext(),
+            agentId: agent.id,
+            roundIndex,
             sessionData,
+            previousRoundComments,
+            // 新参数：传递用户提问和@的Agent
+            userQuestion: userQuestion || undefined,
+            userMentionedAgentIds: userMentionedAgentIds && userMentionedAgentIds.length > 0 ? userMentionedAgentIds : undefined,
           }),
         });
 
-        if (!response.ok) throw new Error('Failed to send user question');
-
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        const activeAgents = new Map<string, AgentComment>();
-        if (!reader) throw new Error('Failed to get response stream');
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (!line?.startsWith('data: ')) continue;
-            try {
-              const data = JSON.parse(line.slice(6).trim());
-              if (!data || typeof data !== 'object') continue;
-
-              switch (data.type) {
-                case 'agent_start': {
-                  const agentInfo = discussion.agents.find(a => a.id === data.agentId);
-                  const comment: AgentComment = {
-                    agentId: data.agentId,
-                    agentName: data.agentName || agentInfo?.name || 'Agent',
-                    agentColor: agentInfo?.color || 'bg-gray-500',
-                    content: '',
-                    expanded: false,
-                    type: 'reply',
-                    replyRound: 1,
-                    targetAgentId: 'user',
-                    targetAgentName: '你',
-                    streamStatus: 'thinking',
-                    toolCalls: [],
-                  };
-                  activeAgents.set(data.agentId, comment);
-                  setCurrentRoundComments(prev => {
-                    const newMap = new Map(prev);
-                    newMap.set(data.agentId, comment);
-                    return newMap;
-                  });
-                  break;
-                }
-                case 'tool_call': {
-                  const existing = activeAgents.get(data.agentId);
-                  if (existing) {
-                    existing.streamStatus = 'tool_calling';
-                    existing.activeToolCall = data.toolName;
-                    existing.toolCalls = [...(existing.toolCalls || []), { toolName: data.toolName, args: data.args }];
-                    setCurrentRoundComments(prev => { const m = new Map(prev); m.set(data.agentId, { ...existing }); return m; });
-                  }
-                  break;
-                }
-                case 'tool_result': {
-                  const existing = activeAgents.get(data.agentId);
-                  if (existing && existing.toolCalls) {
-                    const tc = existing.toolCalls.find(t => t.toolName === data.toolName && !t.result);
-                    if (tc) tc.result = data.result;
-                    existing.activeToolCall = undefined;
-                    existing.streamStatus = 'thinking';
-                    setCurrentRoundComments(prev => { const m = new Map(prev); m.set(data.agentId, { ...existing }); return m; });
-                  }
-                  break;
-                }
-                case 'content_replace': {
-                  // 后端修正内容（DSML 清理后的干净文本）
-                  const existing = activeAgents.get(data.agentId);
-                  if (existing) {
-                    existing.content = data.content || '';
-                    existing.streamStatus = 'thinking';
-                    existing.activeToolCall = undefined;
-                    setCurrentRoundComments(prev => { const m = new Map(prev); m.set(data.agentId, { ...existing }); return m; });
-                  }
-                  break;
-                }
-                case 'chunk': {
-                  const existing = activeAgents.get(data.agentId);
-                  if (existing) {
-                    existing.content += data.content || '';
-                    existing.activeToolCall = undefined;
-                    const sentimentIdx = existing.content.indexOf('[SENTIMENT]');
-                    let displayContent = sentimentIdx !== -1 ? existing.content.substring(0, sentimentIdx).trim() : existing.content;
-                    // Strip DSML function call blocks (DeepSeek native format fallback)
-                    const dsmlIdx = displayContent.search(/<[^>]*(?:function_calls|DSML)[^>]*>/i);
-                    if (dsmlIdx !== -1) displayContent = displayContent.substring(0, dsmlIdx).trim();
-                    // If SENTIMENT detected, main content is complete — stop showing "typing"
-                    existing.streamStatus = sentimentIdx !== -1 ? undefined : 'typing';
-                    setCurrentRoundComments(prev => { const m = new Map(prev); m.set(data.agentId, { ...existing, content: displayContent }); return m; });
-                  }
-                  break;
-                }
-                case 'agent_done': {
-                  const existing = activeAgents.get(data.agentId);
-                  if (existing) {
-                    existing.content = data.content || existing.content;
-                    existing.streamStatus = undefined;
-                    existing.activeToolCall = undefined;
-                    existing.sentiments = data.sentiments;
-                    existing.completedAt = Date.now();
-                    if (data.toolCalls) existing.toolCalls = data.toolCalls;
-                    setCurrentRoundComments(prev => { const m = new Map(prev); m.set(data.agentId, { ...existing }); return m; });
-                    speeches.push({
-                      agentId: existing.agentId,
-                      agentName: existing.agentName,
-                      content: existing.content,
-                      sentiments: existing.sentiments,
-                      toolCalls: existing.toolCalls,
-                    });
-                    activeAgents.delete(data.agentId);
-                  }
-                  break;
-                }
-                case 'error': {
-                  console.error('[UserQuestion] Stream error:', data.error);
-                  break;
-                }
-              }
-            } catch (e) {
-              console.error('[UserQuestion] SSE parse error:', e);
-            }
+        const speech = await handleStreamResponse(
+          response,
+          agent.id,
+          agent.name || 'Unknown Agent',
+          agent.color || 'bg-gray-500',
+          (content, targetId, targetName, _systemPrompt, _userPrompt, sentimentsData, streamStatus, toolCallsData, activeToolCallData) => {
+            setCurrentRoundComments(prev => {
+              const newMap = new Map(prev);
+              newMap.set(agent.id, {
+                agentId: agent.id,
+                agentName: agent.name || 'Unknown Agent',
+                agentColor: agent.color || 'bg-gray-500',
+                content: content || '',
+                expanded: false,
+                type: 'speech',
+                targetAgentId: targetId,
+                targetAgentName: targetName,
+                sentiments: sentimentsData,
+                streamStatus,
+                toolCalls: toolCallsData,
+                activeToolCall: activeToolCallData,
+              });
+              return newMap;
+            });
           }
-        }
-      }
-
-      // ===== Phase 2: 针对性回复 =====
-      setCurrentRoundStatus('review');
-
-      // 确定上下文：如果有 speech（用户提问的回答），用它们作为上下文；否则用上一轮
-      const contextForReplies = speeches.length > 0
-        ? speeches.map(s => ({ agentId: s.agentId, agentName: s.agentName, content: s.content }))
-        : previousRoundComments;
-
-      const allReplies: Array<{ agentId: string; agentName: string; content: string; replyRound: number; targetAgentId?: string; targetAgentName?: string; sentiments?: StockSentiment[]; completedAt?: number; toolCalls?: ToolCallRecord[] }> = [];
-
-      // 有用户提问时：reply1 已在 speech 阶段完成（agent 回答用户），这里只做 1 次针对性回复（replyRound=2）
-      // 无用户提问时：2 次针对性回复（replyRound 1 和 2）
-      const replyStart = userQuestion ? 2 : 1;
-      const replyEnd = 2;
-
-      for (let replyRound = replyStart; replyRound <= replyEnd; replyRound++) {
-        let contextSpeeches: Array<{ agentId: string; agentName: string; content: string }>;
-        let previousRepliesForBatch: Array<{ agentId: string; agentName: string; content: string; replyRound: number }>;
-
-        if (replyRound === replyStart) {
-          contextSpeeches = contextForReplies;
-          previousRepliesForBatch = [];
-        } else {
-          contextSpeeches = contextForReplies;
-          previousRepliesForBatch = allReplies.filter(r => r.replyRound < replyRound);
-        }
-
-        const batchReplies = await executeReplyBatch(
-          replyRound,
-          roundIndex,
-          contextSpeeches,
-          previousRepliesForBatch,
-          previousRoundComments,
         );
 
-        allReplies.push(...batchReplies);
+        const speechCompletedAt = Date.now();
+
+        // 更新完成状态
+        setCurrentRoundComments(prev => {
+          const newMap = new Map(prev);
+          const existing = newMap.get(agent.id);
+          if (existing) {
+            newMap.set(agent.id, { ...existing, streamStatus: undefined, completedAt: speechCompletedAt, toolCalls: speech.toolCalls || existing.toolCalls });
+          }
+          return newMap;
+        });
+
+        // 保存agent的prompts
+        if (speech.systemPrompt && speech.userPrompt) {
+          currentRoundPromptsRef.current.agents.push({
+            agentId: agent.id,
+            agentName: agent.name || 'Unknown Agent',
+            systemPrompt: speech.systemPrompt,
+            userPrompt: speech.userPrompt,
+          });
+        }
+
+        speeches.push({
+          agentId: agent.id,
+          agentName: agent.name || 'Unknown Agent',
+          content: speech.content,
+          sentiments: speech.sentiments,
+          toolCalls: speech.toolCalls,
+          completedAt: speechCompletedAt,
+        });
       }
 
-      // 步骤 2: 流式请求总结
+      // ===== 流式请求主持人总结 =====
       setCurrentRoundStatus('summary');
       setCurrentSummaryText('');
-
-      const agentsReplies = allReplies.map(r => ({
-        agentId: r.agentId,
-        agentName: r.agentName,
-        reply: r.content,
-        replyRound: r.replyRound,
-      }));
 
       const summaryResponse = await fetch('/api/rounds/summary/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId: discussion.id,
-          roundIndex: roundIndex,
-          agentsSpeeches: speeches.map(s => ({ agentId: s.agentId, agentName: s.agentName, content: s.content })),
+          roundIndex,
+          agentsSpeeches: speeches.map(s => ({ agentId: s.agentId, agentName: s.agentName, speech: s.content })),
           agentsReviews: [],
-          agentsReplies,
-          sessionData: sessionData,
+          agentsReplies: [],
+          sessionData,
           ...(userQuestion ? { userQuestion } : {}),
         }),
       });
 
       const { roundSummary, updatedSession } = await handleSummaryStream(summaryResponse);
 
-      // 收集所有 comments（reply to user + reply to agents）
+      // 收集所有 comments
       setCurrentRoundComments(() => {
-        // 用户提问的回答（算作 replyRound 1，目标为用户）
-        const userReplyComments: AgentComment[] = speeches.map(s => ({
+        const allComments: AgentComment[] = speeches.map(s => ({
           agentId: s.agentId,
           agentName: s.agentName,
           agentColor: discussion.agents.find(a => a.id === s.agentId)?.color || 'bg-gray-500',
           content: s.content,
           expanded: false,
-          type: 'reply' as const,
-          replyRound: 1,
-          targetAgentId: 'user',
-          targetAgentName: '你',
+          type: 'speech' as const,
           sentiments: s.sentiments,
           toolCalls: dedupToolCalls(s.toolCalls),
-          completedAt: Date.now(),
+          completedAt: s.completedAt,
         }));
 
-        // reply comments
-        const replyComments: AgentComment[] = allReplies.map(reply => ({
-          agentId: reply.agentId,
-          agentName: reply.agentName,
-          agentColor: discussion.agents.find(a => a.id === reply.agentId)?.color || 'bg-gray-500',
-          content: reply.content,
-          expanded: false,
-          type: 'reply' as const,
-          replyRound: reply.replyRound,
-          targetAgentId: reply.targetAgentId,
-          targetAgentName: reply.targetAgentName,
-          sentiments: reply.sentiments,
-          completedAt: reply.completedAt,
-          toolCalls: dedupToolCalls(reply.toolCalls),
-        }));
-
-        const allComments = [...userReplyComments, ...replyComments];
-        // 收集 agent 的 sentiments 数据，用于 sentimentSummary fallback
-        const agentSentimentsForSummary = [
-          ...speeches.map(s => ({ agentName: s.agentName, sentiments: s.sentiments })),
-          ...allReplies.map(r => ({ agentName: r.agentName, sentiments: r.sentiments })),
-        ];
+        const agentSentimentsForSummary = speeches.map(s => ({ agentName: s.agentName, sentiments: s.sentiments }));
         const moderatorAnalysis = buildModeratorAnalysis(roundSummary, roundIndex, agentSentimentsForSummary);
 
         const newRound: RoundData = {
-          roundIndex: roundSummary.roundIndex || roundIndex,
+          roundIndex: roundSummary.roundIndex || roundSummary.round || roundIndex,
           comments: allComments,
           moderatorAnalysis,
           prompts: {
             agents: [...currentRoundPromptsRef.current.agents],
             moderator: currentRoundPromptsRef.current.moderator,
           },
-          // 如果是用户提问触发的轮次，记录用户问题
           ...(userQuestion ? {
             userQuestion,
             userMentionedAgentIds: userMentionedAgentIds && userMentionedAgentIds.length > 0 ? userMentionedAgentIds : undefined,
@@ -1674,7 +1791,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       console.error('Error starting next round:', error);
       setCurrentRoundStatus('idle');
       setCurrentSummaryText('');
-      setCurrentRoundComments(new Map()); // 清除流式状态，避免残留
+      setCurrentRoundComments(new Map());
       alert(`继续讨论失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setIsLoading(false);
@@ -1758,9 +1875,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
     const mentionedAgentIds = parseMentions(message);
     setUserInput('');
+    setIsInputMultiLine(false);
     setShowMentionPopup(false);
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = '40px';
+      textareaRef.current.style.borderRadius = '9999px';
+      textareaRef.current.style.overflow = 'hidden';
     }
 
     const nextRoundIndex = rounds.length > 0
@@ -1782,7 +1902,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   return (
-    <div className="h-full flex flex-col bg-white relative">
+    <div className="h-full flex flex-col relative" style={{ background: '#FAFAFA' }}>
       {/* 历史话题抽屉 */}
       <HistoryTopicsDrawer
         isOpen={isDrawerOpen}
@@ -1791,54 +1911,50 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         isLoading={isLoading}
       />
 
-      {/* Header - Figma DiscussionHeader 风格 */}
-      <div className="sticky top-0 z-40 bg-white border-b border-[#F0F0F0]">
-        <div className="flex items-center justify-between px-5 py-4">
-          {/* Hamburger Menu - Left */}
-          <button
-            onClick={() => setIsDrawerOpen(true)}
-            className="w-10 h-10 rounded-full border border-[#E0E0E0] flex items-center justify-center active:scale-95 transition-transform"
-          >
-            <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
-          </button>
-
-          {/* Title - Center */}
-          <h1 className="text-[16px] font-medium text-black flex-1 text-center px-2 truncate">{discussion.title}</h1>
-
-          {/* New Chat Icon - Right */}
-          <button
-            onClick={onBack}
-            className="w-10 h-10 rounded-lg border border-[#E0E0E0] flex items-center justify-center active:scale-95 transition-transform"
-          >
-            <PenSquare className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
-          </button>
+      {/* Header — 顶栏磨砂背景只覆盖标题区域 */}
+      <div className="absolute top-0 left-0 right-0 z-40">
+        {/* 顶栏标题区 — 有独立磨砂背景 */}
+        <div className="relative">
+          <div className="absolute inset-0 bg-gradient-to-b from-white/70 via-white/55 to-white/40 backdrop-blur-2xl" />
+          <div className="relative flex items-center justify-between px-5 py-4">
+            <button
+              onClick={() => setIsDrawerOpen(true)}
+              className="w-10 h-10 flex items-center justify-center active:scale-95 transition-transform"
+            >
+              <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+            </button>
+            <h1 className="text-[16px] font-medium text-black flex-1 text-center px-2 truncate whitespace-nowrap overflow-hidden">{discussion.title}</h1>
+            <button
+              onClick={onBack}
+              className="w-10 h-10 flex items-center justify-center active:scale-95 transition-transform"
+            >
+              <PenSquare className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+            </button>
+          </div>
         </div>
+
+        {/* AnalysisReportEntry — 独立层，不受顶栏磨砂遮挡 */}
+        {rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) && (
+          <div className="px-5 py-1.5">
+            <button
+              onClick={() => { setSummaryRoundIndex(null); setShowSummary(true); }}
+              className="w-full rounded-2xl px-4 py-0 h-10 border border-[#AAE874]/25 active:scale-[0.98] transition-all duration-200 flex items-center gap-3 group shadow-[0_2px_8px_rgba(170,232,116,0.12)]"
+              style={{ background: 'linear-gradient(135deg, rgba(240,250,230,0.95), rgba(255,255,255,0.95))' }}
+            >
+              <FileText className="w-4 h-4 text-[#7BC74D] flex-shrink-0" strokeWidth={2} />
+              <span className="text-[14px] font-bold text-[#5BB536]">分析报告</span>
+              <span className="px-2 py-0.5 bg-gradient-to-r from-[#AAE874]/20 to-[#7BC74D]/15 text-[10px] text-[#7BC74D] font-bold rounded-full">
+                第 {rounds[rounds.length - 1]?.roundIndex ?? 1} 轮
+              </span>
+              <span className="flex-1" />
+              <ChevronRight className="w-4 h-4 text-[#7BC74D] group-hover:translate-x-0.5 transition-all duration-200" strokeWidth={2.5} />
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* AnalysisReportEntry - Figma 风格 sticky card */}
-      {rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) && (
-        <div className="sticky top-[60px] z-30 px-5 py-3 bg-white">
-          <button
-            onClick={() => setShowSummary(true)}
-            className="w-full bg-white rounded-[18px] p-5 border border-[#AAE874]/30 shadow-[0_4px_20px_rgba(170,232,116,0.15),0_2px_8px_rgba(0,0,0,0.06)] hover:shadow-[0_6px_28px_rgba(170,232,116,0.25),0_4px_12px_rgba(0,0,0,0.08)] active:scale-[0.98] transition-all duration-200 flex items-center justify-between group"
-          >
-            <div className="flex items-center gap-4">
-              <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-br from-[#AAE874] to-[#8FD055] flex items-center justify-center shadow-[0_4px_12px_rgba(170,232,116,0.3)]">
-                <FileText className="w-6 h-6 text-white" strokeWidth={2.5} />
-                <div className="absolute inset-0 rounded-2xl bg-white/10" />
-              </div>
-              <div className="flex flex-col items-start">
-                <span className="text-[16px] font-bold text-black tracking-tight">分析报告</span>
-                <span className="text-[12px] text-[#666666] font-medium mt-0.5">AI Council Summary Report</span>
-              </div>
-            </div>
-            <ChevronRight className="w-5 h-5 text-[#BBBBBB] group-hover:text-[#AAE874] group-hover:translate-x-0.5 transition-all duration-200" strokeWidth={2.5} />
-          </button>
-        </div>
-      )}
-
-      {/* Content */}
-      <div ref={contentRef} className="flex-1 overflow-y-auto pb-28">
+      {/* Content — 全屏滚动，paddingTop 留出顶栏+分析报告按钮高度，滚动后内容从 header 磨砂层后面穿过 */}
+      <div ref={contentRef} className="flex-1 overflow-y-auto pb-28" style={{ paddingTop: rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) ? '116px' : '72px' }}>
         <div className="space-y-0 pb-4">
           {/* 讨论轮次（包含用户自由提问触发的轮次） */}
           {rounds.map((round, roundIdx) => (
@@ -1884,16 +2000,16 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                   {/* 头像 + 工具图标列 */}
                   <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
                     <AgentAvatar type={getAvatarTypeById(comment.agentId, discussion.agents)} size={36} />
-                    {/* 工具图标（已完成的，竖向排列在头像下方，点击显示提示气泡） */}
-                    {comment.toolCalls && comment.toolCalls.length > 0 && !comment.streamStatus && (
+                    {/* 工具图标（竖向排列在头像下方，流式中和完成后均显示） */}
+                    {comment.toolCalls && comment.toolCalls.length > 0 && (
                       comment.toolCalls.map((tc, tcIdx) => {
                         const tipKey = `${roundIdx}-${commentIdx}-${tcIdx}`;
                         return (
                           <div key={tcIdx} className="relative cursor-pointer" onClick={(e) => { e.stopPropagation(); setActiveToolTip(prev => prev === tipKey ? null : tipKey); }}>
                             {getToolIcon(tc.toolName, 20)}
                             {activeToolTip === tipKey && (
-                              <div className="absolute left-[calc(100%+6px)] top-1/2 -translate-y-1/2 z-50 whitespace-nowrap bg-[#1a1a2e] text-white text-[12px] px-3 py-1.5 rounded-lg shadow-lg pointer-events-auto" style={{ minWidth: 'max-content' }}>
-                                <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-t-[5px] border-t-transparent border-b-[5px] border-b-transparent border-r-[6px] border-r-[#1a1a2e]" />
+                              <div className="absolute left-[calc(100%+6px)] top-1/2 -translate-y-1/2 z-50 whitespace-nowrap bg-white text-[#333333] text-[12px] px-3 py-1.5 rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.1)] border border-[#EEEEEE] pointer-events-auto" style={{ minWidth: 'max-content' }}>
+                                <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-t-[5px] border-t-transparent border-b-[5px] border-b-transparent border-r-[6px] border-r-white" />
                                 用到 {toolDisplayNames[tc.toolName] || tc.toolName} 工具
                               </div>
                             )}
@@ -1907,27 +2023,27 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     <div className="flex items-baseline gap-2 mb-1.5">
                       <h4 className="text-[14px] font-bold text-black">{comment.agentName}</h4>
                       {/* 流式状态指示 / 完成时间 */}
-                      {comment.streamStatus === 'thinking' ? (
-                        <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
-                          thinking
-                          <span className="inline-flex gap-0.5">
-                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                          </span>
-                        </span>
-                      ) : comment.streamStatus === 'tool_calling' ? (
+                      {comment.streamStatus === 'tool_calling' ? (
                         <span className="text-[11px] text-amber-500 font-medium flex items-center gap-1">
-                          {comment.activeToolCall ? (toolDisplayNames[comment.activeToolCall] || comment.activeToolCall) : '调用工具'}
+                          使用{comment.activeToolCall ? (toolDisplayNames[comment.activeToolCall] || comment.activeToolCall) : '工具'}中
                           <span className="inline-flex gap-0.5">
                             <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                             <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
                             <span className="w-1 h-1 bg-amber-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                           </span>
                         </span>
+                      ) : comment.streamStatus === 'thinking' ? (
+                        <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
+                          思考中
+                          <span className="inline-flex gap-0.5">
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
+                        </span>
                       ) : comment.streamStatus === 'typing' ? (
                         <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
-                          typing
+                          输入中
                           <span className="inline-flex gap-0.5">
                             <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                             <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -2004,8 +2120,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               {/* Moderator Analysis - 参照 Figma 图片布局 */}
               {(!(round as any)._isInProgress || (round as any)._showModerator) && (() => {
                 const isStreaming = !!(round as any)._summaryStreamStatus;
-                const isComplete = !isStreaming && round.moderatorAnalysis.consensusLevel > 0;
-                const cl = round.moderatorAnalysis.consensusLevel;
+                if (!round.moderatorAnalysis && !isStreaming) return null;
+                const isComplete = !isStreaming && (round.moderatorAnalysis?.consensusLevel ?? 0) > 0;
+                const cl = round.moderatorAnalysis?.consensusLevel ?? 0;
                 const isModeratorCollapsed = !!collapsedModerator[round.roundIndex];
                 return (
               <div className="mx-5 my-4">
@@ -2025,20 +2142,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                         <h2 className="text-[15px] font-bold text-black leading-tight">主持人分析</h2>
                       </div>
                       <div className="flex items-center gap-2">
-                        {/* 流式状态 */}
-                        {(round as any)._summaryStreamStatus === 'thinking' && (
+                        {/* 流式状态（统一为一个指示器） */}
+                        {isStreaming && (
                           <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
-                            thinking
-                            <span className="inline-flex gap-0.5">
-                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                              <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                            </span>
-                          </span>
-                        )}
-                        {(round as any)._summaryStreamStatus === 'typing' && (
-                          <span className="text-[11px] text-[#AAE874] font-medium flex items-center gap-1">
-                            typing
+                            分析中
                             <span className="inline-flex gap-0.5">
                               <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                               <span className="w-1 h-1 bg-[#AAE874] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -2080,92 +2187,415 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
                         {/* Summary & Sections */}
                         <div className="px-5 pb-5 space-y-4">
-                          {/* thinking 状态占位 */}
-                          {(round as any)._summaryStreamStatus === 'thinking' && !round.moderatorAnalysis.summary && (
-                            <div className="flex gap-1.5 py-2 px-1">
-                              <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                              <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                              <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                          {/* thinking 状态：header 显示"分析中"，内容区用骨架屏占位 */}
+                          {isStreaming && !currentSummaryText && (
+                            <div className="animate-fade-slide-in">
+                              <div className="space-y-2 pl-1">
+                                <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%' }} />
+                                <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
+                              </div>
                             </div>
                           )}
 
-                          {/* Main Summary Text — 简洁展示 */}
-                          {round.moderatorAnalysis.summary && (
-                            <p className={`text-[13px] text-[#555555] leading-relaxed ${isStreaming ? '' : ''}`}>
-                              <span className="text-[#999999] mr-1">💬</span>
-                              {round.moderatorAnalysis.summary}
-                              {isStreaming && <span className="inline-block w-0.5 h-4 bg-[#AAE874] ml-0.5 animate-pulse" />}
-                            </p>
-                          )}
+                          {/* ======= 流式阶段：逐结构块加载（结构化渲染） ======= */}
+                          {isStreaming && currentSummaryText && (() => {
+                            const sectionRegex = /【(总体概述|核心观点|话题维度对比|已达成共识|共识与共识程度|分歧焦点|分歧与对立观点|亮眼观点|共识度|情绪汇总)】/g;
+                            const sectionMatches: Array<{ name: string; index: number }> = [];
+                            let m;
+                            while ((m = sectionRegex.exec(currentSummaryText)) !== null) {
+                              sectionMatches.push({ name: m[1], index: m.index });
+                            }
 
-                          {/* 本轮新观点 */}
-                          {isComplete && round.moderatorAnalysis.newPoints && round.moderatorAnalysis.newPoints.length > 0 && round.moderatorAnalysis.newPoints[0] !== '暂无新观点' && (
-                            <div className="space-y-2">
-                              <div className="flex items-center gap-2">
-                                <Lightbulb className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
-                                <h3 className="text-[14px] font-bold text-black">本轮新观点</h3>
-                              </div>
-                              <ul className="space-y-1.5 pl-6">
-                                {round.moderatorAnalysis.newPoints.slice(0, 3).map((point, pIdx) => (
-                                  <li key={pIdx} className="flex gap-2 text-[13px] text-[#333333] leading-relaxed">
-                                    <span className="text-[#F59E0B] font-bold flex-shrink-0">✦</span>
-                                    <span>{point}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
+                            if (sectionMatches.length === 0) {
+                              // header 已显示"分析中"，内容区用骨架屏占位
+                              return (
+                                <div className="animate-fade-slide-in">
+                                  <div className="space-y-2 pl-1">
+                                    <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%' }} />
+                                    <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
+                                  </div>
+                                </div>
+                              );
+                            }
 
-                          {/* 已达成共识 */}
-                          {isComplete && round.moderatorAnalysis.consensus && round.moderatorAnalysis.consensus.length > 0 && (
-                            <div className="space-y-2">
-                              <div className="flex items-center gap-2">
-                                <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
-                                <h3 className="text-[14px] font-bold text-black">已达成共识</h3>
-                              </div>
-                              <ul className="space-y-2 pl-6">
-                                {round.moderatorAnalysis.consensus.slice(0, 3).map((item, cIdx) => (
-                                  <li key={cIdx} className="flex gap-2 text-[13px] text-[#333333] leading-relaxed">
-                                    <span className="text-[#AAE874] font-bold flex-shrink-0">•</span>
-                                    <span className="flex-1">{item.content}</span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
+                            // 提取各段落的原始文本
+                            const rawSections = new Map<string, { content: string; isComplete: boolean }>();
+                            for (let i = 0; i < sectionMatches.length; i++) {
+                              const start = sectionMatches[i].index + sectionMatches[i].name.length + 2;
+                              const end = i + 1 < sectionMatches.length ? sectionMatches[i + 1].index : currentSummaryText.length;
+                              rawSections.set(sectionMatches[i].name, {
+                                content: currentSummaryText.substring(start, end).trim(),
+                                isComplete: i < sectionMatches.length - 1,
+                              });
+                            }
 
-                          {/* 仍在讨论 */}
-                          {isComplete && round.moderatorAnalysis.disagreements && round.moderatorAnalysis.disagreements.length > 0 && (
-                            <div className="space-y-2">
-                              <div className="flex items-center gap-2">
-                                <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
-                                <h3 className="text-[14px] font-bold text-black">仍在讨论</h3>
+                            // 只展示这些段落（精简：不展示话题维度、亮眼观点、共识度）
+                            const displayOrder = ['总体概述', '共识与共识程度', '已达成共识', '分歧与对立观点', '分歧焦点', '情绪汇总'];
+                            // 从 displayOrder 找到当前存在的段落
+                            const visibleSections = displayOrder.filter(name => rawSections.has(name));
+                            // 找到正在生成的下一段（不在 rawSections 中但在 displayOrder 中排在最后一个可见段之后的）
+                            const lastSectionName = sectionMatches[sectionMatches.length - 1]?.name;
+                            const lastSectionInDisplay = displayOrder.includes(lastSectionName || '');
+                            const isLastSectionLoading = lastSectionInDisplay && !rawSections.get(lastSectionName || '')?.isComplete;
+
+                            const totalAgents = discussion.agents.length;
+
+                            // === 骨架屏组件 ===
+                            const SkeletonBlock = () => (
+                              <div className="space-y-2 pl-1">
+                                <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%' }} />
+                                <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
                               </div>
-                              <ul className="space-y-2 pl-6">
-                                {round.moderatorAnalysis.disagreements.slice(0, 3).map((item, dIdx) => (
-                                  <li key={dIdx} className="space-y-1">
-                                    <p className="text-[13px] text-[#333333] leading-relaxed font-medium">{item.topic}</p>
-                                    {/* 各方观点（如果有） */}
-                                    {item.sides && item.sides.length > 0 && (
-                                      <div className="flex flex-wrap gap-1.5 mt-1">
-                                        {item.sides.map((side, sideIdx) => (
-                                          <span key={sideIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-[#F5F5F5] text-[#666666]">
-                                            <span className={`w-1.5 h-1.5 rounded-full ${sideIdx % 2 === 0 ? 'bg-[#5B8DEF]' : 'bg-[#F59E0B]'}`} />
-                                            {side.position.length > 20 ? side.position.substring(0, 20) + '...' : side.position}
-                                          </span>
-                                        ))}
+                            );
+
+                            return (
+                              <>
+                                {visibleSections.map(sectionName => {
+                                  const raw = rawSections.get(sectionName)!;
+
+                                  // === 总体概述 ===
+                                  if (sectionName === '总体概述') {
+                                    if (!raw.isComplete) {
+                                      return (
+                                        <div key={sectionName} className="animate-fade-slide-in">
+                                          <SkeletonBlock />
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div key={sectionName} className="flex items-start gap-2 animate-fade-slide-in">
+                                        <span className="w-4 flex-shrink-0 text-center text-[#999999] text-[14px] leading-[20px]">💬</span>
+                                        <p className="flex-1 text-[13px] text-[#333333] leading-relaxed">{raw.content}</p>
                                       </div>
-                                    )}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
+                                    );
+                                  }
 
-                          {/* 情绪汇总 — 移至底部 */}
-                          {isComplete && round.moderatorAnalysis.sentimentSummary && round.moderatorAnalysis.sentimentSummary.length > 0 && (
-                            <SentimentSection items={round.moderatorAnalysis.sentimentSummary} agents={discussion.agents} compact />
-                          )}
+                                  // === 共识 ===
+                                  if (sectionName === '共识与共识程度' || sectionName === '已达成共识') {
+                                    if (!raw.isComplete) {
+                                      return (
+                                        <div key={sectionName} className="animate-fade-slide-in">
+                                          <div className="flex items-center gap-2 mb-1.5">
+                                            <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
+                                            <h3 className="text-[14px] font-bold text-[#1A1A1A]">共识</h3>
+                                          </div>
+                                          <SkeletonBlock />
+                                        </div>
+                                      );
+                                    }
+                                    const consensusItems = sectionName === '共识与共识程度'
+                                      ? parseEnhancedConsensusSection(raw.content, totalAgents)
+                                      : parseLegacyConsensusSection(raw.content, totalAgents);
+                                    if (consensusItems.length === 0) return null;
+                                    return (
+                                      <div key={sectionName} className="space-y-1.5 animate-fade-slide-in">
+                                        <div className="flex items-center gap-2">
+                                          <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
+                                          <h3 className="text-[14px] font-bold text-[#1A1A1A]">共识</h3>
+                                          <span className="text-[11px] text-[#999999]">{consensusItems.length}项</span>
+                                        </div>
+                                        <ul className="space-y-2">
+                                          {consensusItems.slice(0, 2).map((item, cIdx) => (
+                                            <li key={cIdx} className="space-y-1">
+                                              <div className="flex items-start gap-2">
+                                                <span className="w-4 flex-shrink-0 flex justify-center mt-[3px]">
+                                                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#AAE874" strokeWidth="1.5" /><path d="M5 8.5L7 10.5L11 6" stroke="#AAE874" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                                </span>
+                                                <span className="flex-1 text-[13px] text-[#333333] leading-relaxed">{item.content}</span>
+                                              </div>
+                                              <div className="flex items-center gap-1.5 pl-6">
+                                                {item.strength && (
+                                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 ${
+                                                    item.strength === 'strong' ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
+                                                    item.strength === 'weak' ? 'bg-[#F5F5F5] text-[#999999]' :
+                                                    'bg-amber-50 text-amber-600'
+                                                  }`}>
+                                                    {item.strength === 'strong' ? '强' : item.strength === 'weak' ? '弱' : '中'}
+                                                  </span>
+                                                )}
+                                                {item.agents && item.agents.length > 0 && (
+                                                  <div className="flex items-center flex-shrink-0">
+                                                    {item.agents.map((agentName, aIdx) => {
+                                                      const agent = discussion.agents.find(a => a.name === agentName);
+                                                      return agent ? (
+                                                        <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={agentName}>
+                                                          <AgentAvatar type={getAvatarType(agent)} size={20} />
+                                                        </span>
+                                                      ) : null;
+                                                    })}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    );
+                                  }
+
+                                  // === 分歧 ===
+                                  if (sectionName === '分歧与对立观点' || sectionName === '分歧焦点') {
+                                    if (!raw.isComplete) {
+                                      return (
+                                        <div key={sectionName} className="animate-fade-slide-in">
+                                          <div className="flex items-center gap-2 mb-1.5">
+                                            <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
+                                            <h3 className="text-[14px] font-bold text-[#1A1A1A]">分歧</h3>
+                                          </div>
+                                          <SkeletonBlock />
+                                        </div>
+                                      );
+                                    }
+                                    const disagreementItems = sectionName === '分歧与对立观点'
+                                      ? parseEnhancedDisagreementsSection(raw.content)
+                                      : parseLegacyDisagreementsSection(raw.content);
+                                    if (disagreementItems.length === 0) return null;
+                                    return (
+                                      <div key={sectionName} className="space-y-1.5 animate-fade-slide-in">
+                                        <div className="flex items-center gap-2">
+                                          <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
+                                          <h3 className="text-[14px] font-bold text-[#1A1A1A]">分歧</h3>
+                                          <span className="text-[11px] text-[#999999]">{disagreementItems.length}项</span>
+                                        </div>
+                                        <ul className="space-y-2">
+                                          {disagreementItems.slice(0, 2).map((item, dIdx) => (
+                                            <li key={dIdx} className="space-y-1.5">
+                                              <div className="flex items-start gap-2">
+                                                <span className="w-4 flex-shrink-0 text-center text-[#F59E0B] text-[14px] leading-[20px]">⚡</span>
+                                                <span className="text-[13px] text-[#333333] leading-relaxed flex-1 min-w-0">{item.topic}</span>
+                                                {item.nature && (
+                                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 mt-[2px] ${
+                                                    item.nature === 'fundamental' ? 'bg-red-50 text-[#E05454]' :
+                                                    item.nature === 'strategic' ? 'bg-amber-50 text-amber-600' :
+                                                    'bg-[#F5F5F5] text-[#999999]'
+                                                  }`}>
+                                                    {item.nature === 'fundamental' ? '根本性' : item.nature === 'strategic' ? '策略性' : '程度性'}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              {/* 各方立场 + agent 头像 */}
+                                              {item.sides && item.sides.length > 0 && (
+                                                <div className="space-y-1.5 pl-6">
+                                                  {item.sides.map((side, sideIdx) => {
+                                                    const sideLabel = String.fromCharCode(65 + sideIdx); // A, B, C...
+                                                    const sideColors = [
+                                                      { bg: 'bg-[#5B8DEF]/10', text: 'text-[#5B8DEF]', border: 'border-[#5B8DEF]/20' },
+                                                      { bg: 'bg-[#F59E0B]/10', text: 'text-[#F59E0B]', border: 'border-[#F59E0B]/20' },
+                                                      { bg: 'bg-[#999999]/10', text: 'text-[#999999]', border: 'border-[#999999]/20' },
+                                                    ];
+                                                    const sc = sideColors[sideIdx] || sideColors[2];
+                                                    return (
+                                                      <div key={sideIdx} className="flex items-center gap-1.5 min-w-0">
+                                                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold min-w-0 flex-1 truncate ${sc.bg} ${sc.text} border ${sc.border}`} title={side.position || `立场${sideLabel}`}>
+                                                          {side.position || `立场${sideLabel}`}
+                                                        </span>
+                                                        <div className="flex items-center flex-shrink-0">
+                                                          {side.agents.map((a, aIdx) => {
+                                                            const agent = discussion.agents.find(ag => ag.name === a.name);
+                                                            return agent ? (
+                                                              <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={a.name}>
+                                                                <AgentAvatar type={getAvatarType(agent)} size={20} />
+                                                              </span>
+                                                            ) : null;
+                                                          })}
+                                                        </div>
+                                                      </div>
+                                                    );
+                                                  })}
+                                                </div>
+                                              )}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    );
+                                  }
+
+                                  // === 情绪汇总 ===
+                                  if (sectionName === '情绪汇总') {
+                                    if (!raw.isComplete) {
+                                      return (
+                                        <div key={sectionName} className="animate-fade-slide-in">
+                                          <div className="flex items-center gap-2 mb-1.5">
+                                            <SentimentChartIcon size={16} />
+                                            <h3 className="text-[14px] font-bold text-[#1A1A1A]">情绪</h3>
+                                          </div>
+                                          <SkeletonBlock />
+                                        </div>
+                                      );
+                                    }
+                                    const sentimentItems = parseSentimentSummarySection(raw.content);
+                                    if (sentimentItems.length === 0) return null;
+                                    return (
+                                      <div key={sectionName} className="animate-fade-slide-in">
+                                        <SentimentSection items={sentimentItems} agents={discussion.agents} compact />
+                                      </div>
+                                    );
+                                  }
+
+                                  return null;
+                                })}
+
+                                {/* 下一段正在生成的骨架屏占位 */}
+                                {!isLastSectionLoading && (() => {
+                                  // 检查是否还有未出现的段落
+                                  const allPossibleSections = ['总体概述', '共识与共识程度', '已达成共识', '分歧与对立观点', '分歧焦点', '情绪汇总'];
+                                  const hasAllCompleted = allPossibleSections.some(name => {
+                                    const sec = rawSections.get(name);
+                                    return sec && !sec.isComplete;
+                                  });
+                                  if (hasAllCompleted) return null;
+                                  // 还在流式中，最后一个可见段已完成，说明下一段正在生成
+                                  return (
+                                    <div className="animate-fade-slide-in">
+                                      <SkeletonBlock />
+                                    </div>
+                                  );
+                                })()}
+                              </>
+                            );
+                          })()}
+
+                          {/* ======= 完成后：结构化展示（简约版 — 信息流） ======= */}
+                          {isComplete && (() => {
+                            const ma = round.moderatorAnalysis;
+                            if (!ma) return null;
+                            return (
+                              <>
+                                {/* 总体概述 */}
+                                {ma.summary && (
+                                  <div className="flex items-start gap-2">
+                                    <span className="w-4 flex-shrink-0 text-center text-[#999999] text-[14px] leading-[20px]">💬</span>
+                                    <p className="flex-1 text-[13px] text-[#333333] leading-relaxed">{ma.summary}</p>
+                                  </div>
+                                )}
+
+                                {/* 共识（前2条，带强度标签+agent头像） */}
+                                {ma.consensus && ma.consensus.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center gap-2">
+                                      <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
+                                      <h3 className="text-[14px] font-bold text-[#1A1A1A]">共识</h3>
+                                      <span className="text-[11px] text-[#999999]">{ma.consensus.length}项</span>
+                                    </div>
+                                    <ul className="space-y-2">
+                                      {ma.consensus.slice(0, 2).map((item, cIdx) => (
+                                        <li key={cIdx} className="space-y-1">
+                                          <div className="flex items-start gap-2">
+                                            <span className="w-4 flex-shrink-0 flex justify-center mt-[3px]">
+                                              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#AAE874" strokeWidth="1.5" /><path d="M5 8.5L7 10.5L11 6" stroke="#AAE874" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                            </span>
+                                            <span className="flex-1 text-[13px] text-[#333333] leading-relaxed">{item.content}</span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 pl-6">
+                                            {item.strength && (
+                                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 ${
+                                                item.strength === 'strong' ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
+                                                item.strength === 'weak' ? 'bg-[#F5F5F5] text-[#999999]' :
+                                                'bg-amber-50 text-amber-600'
+                                              }`}>
+                                                {item.strength === 'strong' ? '强' : item.strength === 'weak' ? '弱' : '中'}
+                                              </span>
+                                            )}
+                                            {item.agents && item.agents.length > 0 && (
+                                              <div className="flex items-center flex-shrink-0">
+                                                {item.agents.map((agentName, aIdx) => {
+                                                  const agent = discussion.agents.find(a => a.name === agentName);
+                                                  return agent ? (
+                                                    <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={agentName}>
+                                                      <AgentAvatar type={getAvatarType(agent)} size={20} />
+                                                    </span>
+                                                  ) : null;
+                                                })}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* 分歧（前2条，带性质标签+各方立场agent头像） */}
+                                {ma.disagreements && ma.disagreements.length > 0 && (
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center gap-2">
+                                      <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
+                                      <h3 className="text-[14px] font-bold text-[#1A1A1A]">分歧</h3>
+                                      <span className="text-[11px] text-[#999999]">{ma.disagreements.length}项</span>
+                                    </div>
+                                    <ul className="space-y-2">
+                                      {ma.disagreements.slice(0, 2).map((item, dIdx) => (
+                                        <li key={dIdx} className="space-y-1.5">
+                                          <div className="flex items-start gap-2">
+                                            <span className="w-4 flex-shrink-0 text-center text-[#F59E0B] text-[14px] leading-[20px]">⚡</span>
+                                            <span className="text-[13px] text-[#333333] leading-relaxed flex-1 min-w-0">{item.topic}</span>
+                                            {item.nature && (
+                                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 mt-[2px] ${
+                                                item.nature === 'fundamental' ? 'bg-red-50 text-[#E05454]' :
+                                                item.nature === 'strategic' ? 'bg-amber-50 text-amber-600' :
+                                                'bg-[#F5F5F5] text-[#999999]'
+                                              }`}>
+                                                {item.nature === 'fundamental' ? '根本性' : item.nature === 'strategic' ? '策略性' : '程度性'}
+                                              </span>
+                                            )}
+                                          </div>
+                                          {/* 各方立场 + agent 头像 */}
+                                          {item.sides && item.sides.length > 0 && (
+                                            <div className="space-y-1.5 pl-6">
+                                              {item.sides.map((side, sideIdx) => {
+                                                const sideLabel = String.fromCharCode(65 + sideIdx);
+                                                const sideColors = [
+                                                  { bg: 'bg-[#5B8DEF]/10', text: 'text-[#5B8DEF]', border: 'border-[#5B8DEF]/20' },
+                                                  { bg: 'bg-[#F59E0B]/10', text: 'text-[#F59E0B]', border: 'border-[#F59E0B]/20' },
+                                                  { bg: 'bg-[#999999]/10', text: 'text-[#999999]', border: 'border-[#999999]/20' },
+                                                ];
+                                                const sc = sideColors[sideIdx] || sideColors[2];
+                                                return (
+                                                  <div key={sideIdx} className="flex items-center gap-1.5 min-w-0">
+                                                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold min-w-0 flex-1 truncate ${sc.bg} ${sc.text} border ${sc.border}`} title={side.position || `立场${sideLabel}`}>
+                                                      {side.position || `立场${sideLabel}`}
+                                                    </span>
+                                                    <div className="flex items-center flex-shrink-0">
+                                                      {side.agents.map((a, aIdx) => {
+                                                        const agent = discussion.agents.find(ag => ag.name === a.name);
+                                                        return agent ? (
+                                                          <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={a.name}>
+                                                            <AgentAvatar type={getAvatarType(agent)} size={20} />
+                                                          </span>
+                                                        ) : null;
+                                                      })}
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* 情绪汇总 — 简约版 */}
+                                {ma.sentimentSummary && ma.sentimentSummary.length > 0 && (
+                                  <SentimentSection items={ma.sentimentSummary} agents={discussion.agents} compact />
+                                )}
+
+                                {/* 查看完整分析报告 */}
+                                <div className="pt-2 border-t border-[#F0F0F0]/60">
+                                  <button
+                                    onClick={() => { setSummaryRoundIndex(round.roundIndex); setShowSummary(true); }}
+                                    className="w-full flex items-center justify-center gap-1.5 text-[12px] text-[#7BC74D] font-bold py-2 rounded-xl hover:bg-[#AAE874]/8 active:bg-[#AAE874]/15 transition-all"
+                                  >
+                                    <FileText className="w-3.5 h-3.5" />
+                                    查看完整分析报告
+                                    <ChevronRight className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       </>
                     )}
@@ -2183,19 +2613,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       {showScrollToBottom && (
         <button
           onClick={scrollToBottom}
-          className="absolute right-5 bottom-28 z-[9999] w-12 h-12 rounded-full bg-[#AAE874] shadow-[0_4px_20px_rgba(170,232,116,0.4)] flex items-center justify-center active:scale-95 transition-all hover:shadow-[0_6px_24px_rgba(170,232,116,0.5)]"
+          className="absolute right-5 bottom-28 z-[9999] w-10 h-10 rounded-full shadow-[0_4px_20px_rgba(170,232,116,0.4)] flex items-center justify-center active:scale-95 transition-all hover:shadow-[0_6px_24px_rgba(170,232,116,0.5)]"
+          style={{ background: 'rgba(170,232,116,0.92)' }}
         >
           <ArrowDown className="w-5 h-5 text-white" strokeWidth={2.5} />
         </button>
       )}
 
-      {/* Bottom Action Bar - Figma 风格 */}
-      <div className="absolute bottom-0 left-0 right-0 px-5 pb-6 pt-4 z-50">
+      {/* Bottom Action Bar — 与顶栏高度一致 */}
+      <div className="absolute bottom-0 left-0 right-0 z-50">
         {/* Glassmorphic Background */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
 
-        <div className="relative flex items-center gap-3">
-          {/* Prompts Button */}
+        <div className={`relative flex gap-3 px-5 py-4 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
+          {/* Prompts Button — 大小与发送按钮一致 */}
           <button
             onClick={() => {
               const currentRound = rounds[rounds.length - 1];
@@ -2237,7 +2668,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             )}
 
-            {/* 可编辑输入框 — 对齐首页样式 */}
+            {/* 可编辑输入框 — 与首页输入框高度一致，单行圆弧/多行圆角平滑过渡 */}
             <textarea
               ref={textareaRef}
               value={userInput}
@@ -2256,17 +2687,34 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               disabled={isLoading}
               placeholder={isLoading ? '专家们正在讨论中...' : '向专家提问'}
               rows={1}
-              className="w-full px-5 py-3.5 bg-white border border-[#E8E8E8] rounded-full text-[15px] text-black placeholder:text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none overflow-hidden focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] transition-all disabled:bg-[#F8F8F8] disabled:cursor-not-allowed"
-              style={{ minHeight: '48px', maxHeight: '120px' }}
+              className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-[#F8F8F8] disabled:cursor-not-allowed"
+              style={{
+                height: '40px',
+                maxHeight: '156px',
+                lineHeight: '20px',
+                paddingTop: '9px',
+                paddingBottom: '9px',
+                borderRadius: '9999px',
+                transition: 'border-radius 0.25s ease, border-color 0.2s, box-shadow 0.2s, height 0.15s ease',
+                overflow: 'hidden',
+              }}
               onInput={(e) => {
                 const target = e.target as HTMLTextAreaElement;
-                target.style.height = 'auto';
-                target.style.height = Math.min(target.scrollHeight, 120) + 'px';
+                // 计算自然内容高度
+                target.style.height = '40px';
+                const scrollH = target.scrollHeight;
+                const newH = Math.max(40, Math.min(scrollH, 156));
+                target.style.height = newH + 'px';
+                // 动态切换 borderRadius 和多行状态
+                const multiLine = newH > 40;
+                target.style.borderRadius = multiLine ? '16px' : '9999px';
+                target.style.overflow = scrollH > 156 ? 'auto' : 'hidden';
+                setIsInputMultiLine(multiLine);
               }}
             />
           </div>
 
-          {/* Send Button (发送用户提问) */}
+          {/* Send Button — 固定在底部 */}
           <button
             onClick={() => {
               if (userInput.trim()) {
@@ -2277,7 +2725,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             }}
             disabled={isLoading}
             className={`
-              flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all
+              flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all
               ${isLoading
                 ? 'bg-[#E8E8E8] cursor-not-allowed opacity-50'
                 : userInput.trim()
@@ -2294,6 +2742,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             )}
           </button>
         </div>
+        {/* Safe area spacer — 独立于内容区域，不影响内容行高度 */}
+        <div className="relative" style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
       </div>
 
       {/* Prompts Modal */}
@@ -2364,97 +2814,359 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         </div>
       )}
 
-      {/* Summary Modal - Figma 风格 */}
-      {showSummary && (
-        <div className="absolute inset-0 bg-black/30 flex items-end z-[10000]">
-          <div className="w-full bg-white rounded-t-[32px] max-h-[90vh] overflow-hidden flex flex-col shadow-[0_-8px_40px_rgba(0,0,0,0.12)]">
-            <div className="px-5 pt-4 pb-3 flex items-center justify-center relative border-b border-[#F0F0F0]">
-              <div className="w-12 h-1.5 bg-[#E0E0E0] rounded-full"></div>
+      {/* Summary Modal — 参考历史话题抽屉：始终挂载 + CSS transition */}
+      <div
+        className={`absolute inset-0 z-[10000] flex items-end transition-opacity duration-300 ${
+          showSummary ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+      >
+        {/* 背景遮罩 */}
+        <div
+          className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+          onClick={() => setShowSummary(false)}
+        />
+        {/* 抽屉内容 */}
+        <div
+          className={`relative w-full bg-white rounded-t-[28px] max-h-[92vh] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
+            showSummary ? 'translate-y-0' : 'translate-y-full'
+          }`}
+        >
+            <div className="px-5 pt-3 pb-3 flex items-center justify-center relative bg-gradient-to-b from-white to-[#FAFAFA] border-b border-[#F0F0F0]/60">
+              <div className="w-10 h-1 bg-[#E0E0E0] rounded-full"></div>
               <button
                 onClick={() => setShowSummary(false)}
-                className="absolute right-5 top-3 w-9 h-9 bg-[#F8F8F8] rounded-full flex items-center justify-center active:scale-95 transition-transform"
+                className="absolute right-4 top-2.5 w-8 h-8 bg-[#F5F5F5] hover:bg-[#EEEEEE] rounded-full flex items-center justify-center active:scale-90 transition-all"
               >
-                <X className="w-5 h-5 text-[#666666]" />
+                <X className="w-4 h-4 text-[#888888]" />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto">
               <div className="p-5">
-                <h2 className="text-[22px] font-bold text-black mb-2">分析报告</h2>
-
-                {/* Version Badge */}
-                <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#AAE874] rounded-full mb-4">
-                  <span className="text-white text-[13px] font-medium">讨论中</span>
-                  <span className="px-2 py-0.5 bg-white/20 text-white text-[11px] rounded">第{rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round}轮</span>
+                {/* Report Header */}
+                <div className="mb-6">
+                  <div className="flex items-center gap-3 mb-3">
+                    <h2 className="text-[24px] font-extrabold text-[#1A1A1A] tracking-tight">分析报告</h2>
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] rounded-full shadow-[0_2px_8px_rgba(170,232,116,0.3)]">
+                      <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                      <span className="text-white text-[11px] font-bold tracking-wide">第{summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round)}轮</span>
+                    </div>
+                  </div>
+                  <h3 className="text-[18px] font-bold text-[#333333] leading-snug">{discussion.title}</h3>
                 </div>
-
-                {/* Title */}
-                <h3 className="text-[20px] font-bold text-black mb-4">{discussion.title}</h3>
 
                 {/* Summary Content */}
                 {(() => {
-                  const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
-                  const analysis = latestRound?.moderatorAnalysis || discussion.moderatorAnalysis;
+                  // 根据 summaryRoundIndex 选择对应轮次，null 表示最新轮
+                  const targetRound = summaryRoundIndex !== null
+                    ? rounds.find(r => r.roundIndex === summaryRoundIndex) || (rounds.length > 0 ? rounds[rounds.length - 1] : null)
+                    : (rounds.length > 0 ? rounds[rounds.length - 1] : null);
+                  const analysis = targetRound?.moderatorAnalysis || discussion.moderatorAnalysis;
+                  if (!analysis) return <p className="text-[13px] text-[#999999]">暂无分析数据</p>;
 
                   return (
                     <>
-                      <div className="bg-[#F8F8F8] rounded-2xl p-4 mb-4 border border-[#EEEEEE]">
-                        <p className="text-[14px] text-[#333333] leading-relaxed mb-3">
-                          {analysis.summary}
-                        </p>
-                        <div className="flex items-center gap-2 mt-3">
-                          <div className="flex -space-x-2">
-                            {discussion.agents.map((agent, i) => (
-                              <div key={i} className="w-6 h-6 rounded-full border-2 border-white overflow-hidden">
-                                <AgentAvatar type={getAvatarType(agent)} size={24} />
+                      {/* 总体概述 + 数据仪表板 */}
+                      <div className="relative mb-6 rounded-2xl overflow-hidden">
+                        <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#AAE874] via-[#7BC74D] to-[#5BB536]" />
+                        <div className="bg-gradient-to-b from-[#FAFEF5] to-white p-4 pt-5 border border-[#E8EEE0] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
+                          <p className="text-[14px] text-[#444444] leading-[1.75]">
+                            {analysis.summary}
+                          </p>
+                          {/* Stats Dashboard — 横排指标 */}
+                          <div className="flex items-center gap-3 mt-4 pt-3.5 border-t border-[#E8EEE0]/80">
+                            {/* 共识度 */}
+                            <div className="flex items-center gap-2 px-3 py-2 bg-[#FAFAFA] rounded-xl">
+                              <div className="relative w-9 h-9 flex-shrink-0">
+                                <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
+                                  <circle cx="18" cy="18" r="14" fill="none" stroke="#F0F0F0" strokeWidth="2.5" />
+                                  <circle cx="18" cy="18" r="14" fill="none"
+                                    stroke={analysis.consensusLevel >= 70 ? '#AAE874' : analysis.consensusLevel >= 40 ? '#F59E0B' : '#E05454'}
+                                    strokeWidth="2.5" strokeLinecap="round"
+                                    strokeDasharray={`${(analysis.consensusLevel / 100) * 87.96} 87.96`} />
+                                </svg>
+                                <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#333333]">{analysis.consensusLevel}</span>
                               </div>
-                            ))}
-                          </div>
-                          <span className="text-[12px] text-[#999999]">参与者</span>
-                          <div className="flex-1"></div>
-                          <Check className="w-4 h-4 text-[#AAE874]" />
-                          <span className="text-[12px] text-[#666666]">{analysis.consensus.length}</span>
-                          <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
-                          <span className="text-[12px] text-[#666666]">{analysis.disagreements.length}</span>
-                        </div>
-                      </div>
-
-                      {/* Consensus */}
-                      <div className="mb-6">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Check className="w-5 h-5 text-[#AAE874]" strokeWidth={2.5} />
-                          <h4 className="text-[16px] font-bold text-black">关键共识</h4>
-                        </div>
-                        {analysis.consensus.map((item, index) => (
-                          <div key={index} className="flex items-start gap-3 mb-3 p-4 bg-[#AAE874]/5 rounded-2xl border border-[#AAE874]/20">
-                            <span className="text-[#AAE874] text-[16px] font-bold mt-0.5">{index + 1}</span>
-                            <div className="flex-1">
-                              <p className="text-[14px] text-[#333333] mb-2">{item.content}</p>
-                              <div className="flex items-center gap-2">
-                                <span className="text-[12px] text-[#666666]">{item.agents.join(' · ')}</span>
-                                <div className="flex-1"></div>
-                                <span className="text-[14px] text-[#AAE874] font-bold">{item.percentage}%</span>
+                              <div className="flex flex-col">
+                                <span className="text-[10px] text-[#AAAAAA] leading-none">共识度</span>
+                                <span className={`text-[13px] font-bold leading-tight ${analysis.consensusLevel >= 70 ? 'text-[#7BC74D]' : analysis.consensusLevel >= 40 ? 'text-[#F59E0B]' : 'text-[#E05454]'}`}>{analysis.consensusLevel}%</span>
+                              </div>
+                            </div>
+                            {/* 参与专家 */}
+                            <div className="flex items-center gap-2 px-3 py-2 bg-[#FAFAFA] rounded-xl">
+                              <div className="flex -space-x-1">
+                                {discussion.agents.slice(0, 4).map((agent, i) => (
+                                  <div key={i} className="w-6 h-6 rounded-full border-[1.5px] border-white overflow-hidden shadow-[0_0_0_0.5px_rgba(0,0,0,0.06)]">
+                                    <AgentAvatar type={getAvatarType(agent)} size={24} />
+                                  </div>
+                                ))}
+                                {discussion.agents.length > 4 && (
+                                  <div className="w-6 h-6 rounded-full border-[1.5px] border-white bg-[#F0F0F0] flex items-center justify-center shadow-[0_0_0_0.5px_rgba(0,0,0,0.06)]">
+                                    <span className="text-[9px] font-bold text-[#999999]">+{discussion.agents.length - 4}</span>
+                                  </div>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-[#888888] font-medium whitespace-nowrap">{discussion.agents.length}位</span>
+                            </div>
+                            <div className="flex-1" />
+                            {/* 共识/分歧数 */}
+                            <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1 px-2.5 py-1.5 bg-[#AAE874]/10 rounded-lg">
+                                <Check className="w-3 h-3 text-[#7BC74D]" strokeWidth={3} />
+                                <span className="text-[12px] text-[#7BC74D] font-bold">{analysis.consensus.length}</span>
+                              </div>
+                              <div className="flex items-center gap-1 px-2.5 py-1.5 bg-[#F59E0B]/10 rounded-lg">
+                                <AlertCircle className="w-3 h-3 text-[#F59E0B]" strokeWidth={2.5} />
+                                <span className="text-[12px] text-[#F59E0B] font-bold">{analysis.disagreements.length}</span>
                               </div>
                             </div>
                           </div>
-                        ))}
-                      </div>
-
-                      {/* Disagreements */}
-                      <div className="mb-6">
-                        <div className="flex items-center gap-2 mb-3">
-                          <AlertCircle className="w-5 h-5 text-[#F59E0B]" />
-                          <h4 className="text-[16px] font-bold text-black">分歧焦点</h4>
                         </div>
-                        {analysis.disagreements.map((item, index) => (
-                          <div key={index} className="mb-3 p-4 bg-[#FAFAFA] rounded-2xl border border-[#EEEEEE]">
-                            <h5 className="text-[14px] font-bold text-black mb-2">{item.topic}</h5>
-                            <p className="text-[12px] text-[#666666] mb-3">{item.description}</p>
-                          </div>
-                        ))}
                       </div>
 
-                      {/* Sentiment Summary — 共享组件 */}
+                      {/* 话题维度对比 */}
+                      {analysis.topicComparisons && analysis.topicComparisons.length > 0 && (
+                      <div className="mb-6">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center">
+                            <Lightbulb className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
+                          </div>
+                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">话题维度对比</h4>
+                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.topicComparisons.length}个维度</span>
+                        </div>
+                        <div className="space-y-3">
+                          {analysis.topicComparisons.map((tc, tcIdx) => (
+                            <div key={tcIdx} className="relative rounded-2xl border border-[#F0F0F0] overflow-hidden bg-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                              <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#F59E0B] to-[#FFD93D]" />
+                              <div className="px-4 pl-5 py-3.5">
+                                {/* 标题行：标题自然折行，标签右上角 */}
+                                <div className="mb-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <h5 className="text-[14px] font-bold text-[#1A1A1A] leading-snug flex-1">{tc.topic}</h5>
+                                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 mt-0.5 ${
+                                      tc.convergenceLevel === 'high' ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
+                                      tc.convergenceLevel === 'low' ? 'bg-red-50 text-[#E05454]' :
+                                      'bg-amber-50 text-amber-600'
+                                    }`}>
+                                      {tc.convergenceLevel === 'high' ? '高趋同' : tc.convergenceLevel === 'low' ? '低趋同' : '中趋同'}
+                                    </span>
+                                  </div>
+                                </div>
+                                {/* 各 agent 观点 */}
+                                <div className="space-y-2.5">
+                                  {tc.agentPositions.map((ap, apIdx) => {
+                                    const agent = discussion.agents.find(a => a.name === ap.agentName);
+                                    return (
+                                      <div key={apIdx} className="flex items-start gap-2">
+                                        {agent && <span className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 mt-0.5"><AgentAvatar type={getAvatarType(agent)} size={20} /></span>}
+                                        <div className="flex-1 min-w-0">
+                                          <span className="text-[11px] text-[#AAAAAA] font-medium">{ap.agentName}</span>
+                                          <p className="text-[13px] text-[#444444] leading-relaxed mt-0.5">{ap.position}</p>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      )}
+
+                      {/* 共识与共识程度 */}
+                      {analysis.consensus && analysis.consensus.length > 0 && (
+                      <div className="mb-6">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-7 h-7 rounded-lg bg-[#AAE874]/15 flex items-center justify-center">
+                            <Check className="w-4 h-4 text-[#7BC74D]" strokeWidth={3} />
+                          </div>
+                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">共识与共识程度</h4>
+                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.consensus.length}项</span>
+                        </div>
+                        <div className="space-y-3">
+                          {analysis.consensus.map((item, index) => (
+                            <div key={index} className="relative rounded-2xl border border-[#E8F5D6] overflow-hidden bg-gradient-to-b from-[#FBFEF6] to-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                              <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#AAE874] to-[#7BC74D]" />
+                              <div className="px-4 pl-5 py-3.5">
+                                <div className="flex items-start gap-3">
+                                  <span className="w-6 h-6 rounded-full bg-[#AAE874]/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                    <span className="text-[12px] font-bold text-[#7BC74D]">{index + 1}</span>
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                    {/* 内容 + 强度标签 */}
+                                    <div className="flex items-start justify-between gap-2 mb-1.5">
+                                      <p className="text-[14px] text-[#333333] font-semibold flex-1 leading-snug">{item.content}</p>
+                                      {item.strength && (
+                                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 mt-0.5 ${
+                                          item.strength === 'strong' ? 'bg-[#AAE874]/20 text-[#5BB536]' :
+                                          item.strength === 'weak' ? 'bg-[#F5F5F5] text-[#AAAAAA]' :
+                                          'bg-amber-50 text-amber-600'
+                                        }`}>
+                                          {item.strength === 'strong' ? '强共识' : item.strength === 'weak' ? '弱共识' : '中等共识'}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {/* Agent tags */}
+                                    <div className="flex flex-wrap gap-1.5 mb-1.5">
+                                      {item.agents.map((agentName, aIdx) => {
+                                        const agent = discussion.agents.find(a => a.name === agentName);
+                                        return (
+                                          <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-white text-[#7BC74D] border border-[#E8F5D6] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+                                            {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
+                                            {agentName}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                    {/* Reasoning */}
+                                    {item.reasoning && (
+                                      <p className="text-[12px] text-[#888888] leading-relaxed">{item.reasoning}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      )}
+
+                      {/* 分歧与对立观点 */}
+                      {analysis.disagreements && analysis.disagreements.length > 0 && (
+                      <div className="mb-6">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center">
+                            <AlertCircle className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
+                          </div>
+                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">分歧与对立观点</h4>
+                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.disagreements.length}项</span>
+                        </div>
+                        <div className="space-y-3">
+                          {analysis.disagreements.map((item, index) => (
+                            <div key={index} className="relative rounded-2xl border border-[#F5EED8] overflow-hidden bg-gradient-to-b from-[#FFFDF7] to-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                              <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#F59E0B] to-[#FFD93D]" />
+                              <div className="px-4 pl-5 py-3.5">
+                                {/* 标题 + 性质标签 */}
+                                <div className="mb-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <h5 className="text-[14px] font-bold text-[#1A1A1A] leading-snug flex-1">{item.topic}</h5>
+                                    {item.nature && (
+                                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 mt-0.5 ${
+                                        item.nature === 'fundamental' ? 'bg-[#FEE2E2] text-[#E05454]' :
+                                        item.nature === 'strategic' ? 'bg-[#FEF3C7] text-[#D97706]' :
+                                        'bg-[#F5F5F5] text-[#999999]'
+                                      }`}>
+                                        {item.nature === 'fundamental' ? '根本性分歧' : item.nature === 'strategic' ? '策略性分歧' : '程度性分歧'}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                {/* 各方立场 — 立场文字在上、agent 标签在下 */}
+                                {item.sides && item.sides.length > 0 && (
+                                  <div className="space-y-2.5 mb-2">
+                                    {item.sides.map((side, sideIdx) => {
+                                      const sideColors = [
+                                        { bg: 'bg-[#EFF3FE]', text: 'text-[#5B8DEF]', border: 'border-[#D6E2FD]' },
+                                        { bg: 'bg-[#FEF9EE]', text: 'text-[#D97706]', border: 'border-[#FDE68A]' },
+                                        { bg: 'bg-[#F8F8F8]', text: 'text-[#666666]', border: 'border-[#E5E5E5]' },
+                                      ];
+                                      const sc = sideColors[sideIdx] || sideColors[2];
+                                      return (
+                                        <div key={sideIdx} className={`p-3 rounded-xl ${sc.bg} border ${sc.border}`}>
+                                          {/* 立场观点 */}
+                                          <p className={`text-[12px] font-semibold leading-relaxed mb-2 ${sc.text}`}>
+                                            {side.position || `立场${String.fromCharCode(65 + sideIdx)}`}
+                                          </p>
+                                          {/* agent 标签 */}
+                                          <div className="flex items-center gap-1.5 flex-wrap">
+                                            {side.agents.map((a, aIdx) => {
+                                              const agent = discussion.agents.find(ag => ag.name === a.name);
+                                              return (
+                                                <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-white/90 text-[#555555] font-medium shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+                                                  {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
+                                                  {a.name}
+                                                </span>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {/* Fallback description */}
+                                {(!item.sides || item.sides.length === 0) && item.description && (
+                                  <p className="text-[12px] text-[#888888] mb-2">{item.description}</p>
+                                )}
+                                {/* Root cause */}
+                                {item.rootCause && (
+                                  <div className="mt-2 pt-2.5 border-t border-[#F0EDE0]">
+                                    <div className="flex items-start gap-1.5">
+                                      <span className="text-[10px] text-[#BBBBBB] font-bold flex-shrink-0 mt-[1px]">根源</span>
+                                      <span className="text-[12px] text-[#888888] leading-relaxed">{item.rootCause}</span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      )}
+
+                      {/* 亮眼观点 */}
+                      {analysis.highlights && analysis.highlights.length > 0 && (
+                      <div className="mb-6">
+                        <div className="flex items-center gap-2.5 mb-3">
+                          <div className="w-7 h-7 rounded-lg bg-[#FFD93D]/15 flex items-center justify-center">
+                            <Lightbulb className="w-4 h-4 text-[#FFD93D]" strokeWidth={2.5} />
+                          </div>
+                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">亮眼观点</h4>
+                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.highlights.length}项</span>
+                        </div>
+                        <div className="space-y-3">
+                          {analysis.highlights.map((hl, hlIdx) => {
+                            const proposerAgent = discussion.agents.find(a => a.name === hl.agentName);
+                            return (
+                              <div key={hlIdx} className="relative rounded-2xl border border-[#FDE68A]/60 overflow-hidden bg-gradient-to-b from-[#FFFDF5] to-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                                <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#FFD93D] to-[#FFA500]" />
+                                <div className="px-4 pl-5 py-3.5">
+                                  {/* Proposer */}
+                                  <div className="flex items-center gap-2 mb-2">
+                                    {proposerAgent && <span className="w-6 h-6 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(proposerAgent)} size={24} /></span>}
+                                    <span className="text-[12px] text-[#D97706] font-bold">{hl.agentName}</span>
+                                  </div>
+                                  {/* Content */}
+                                  <p className="text-[14px] text-[#333333] leading-[1.7] mb-2">{hl.content}</p>
+                                  {/* Supporting agents */}
+                                  {hl.supportingAgents && hl.supportingAgents.length > 0 && (
+                                    <div className="flex items-center gap-1.5 mb-1.5">
+                                      <span className="text-[10px] text-[#BBBBBB] font-bold">认同</span>
+                                      {hl.supportingAgents.map((name, sIdx) => {
+                                        const agent = discussion.agents.find(a => a.name === name);
+                                        return (
+                                          <span key={sIdx} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#FEF3C7] text-[#D97706] border border-[#FDE68A]/60 font-medium">
+                                            {agent && <span className="w-3 h-3 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(agent)} size={12} /></span>}
+                                            {name}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  {/* Reason */}
+                                  {hl.reason && (
+                                    <p className="text-[12px] text-[#888888] leading-relaxed">{hl.reason}</p>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      )}
+
+                      {/* 情绪汇总 — 详细版 */}
                       {analysis.sentimentSummary && analysis.sentimentSummary.length > 0 && (
                         <SentimentSection items={analysis.sentimentSummary} agents={discussion.agents} />
                       )}
@@ -2464,17 +3176,16 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             </div>
 
-            <div className="p-5 border-t border-[#F0F0F0]">
+            <div className="p-5 border-t border-[#F0F0F0]/60 bg-gradient-to-t from-white via-white to-white/80 backdrop-blur-sm">
               <button
                 onClick={() => setShowSummary(false)}
-                className="w-full py-3.5 bg-[#AAE874] text-white rounded-full text-[14px] font-medium active:scale-[0.98] transition-transform shadow-[0_4px_16px_rgba(170,232,116,0.4)]"
+                className="w-full py-3.5 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] text-white rounded-2xl text-[14px] font-bold active:scale-[0.97] transition-all shadow-[0_4px_20px_rgba(170,232,116,0.35)] hover:shadow-[0_6px_24px_rgba(170,232,116,0.45)]"
               >
                 关闭
               </button>
             </div>
           </div>
         </div>
-      )}
     </div>
   );
 }
