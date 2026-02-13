@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, X, FileText, SendHorizontal, Square, Check, AlertCircle, Lightbulb, Share2, Download } from 'lucide-react';
+import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, X, FileText, SendHorizontal, Square, Check, AlertCircle, Lightbulb, Share2, Download, Copy, CheckCheck } from 'lucide-react';
 import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
 import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
@@ -635,6 +635,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const [showRoundPicker, setShowRoundPicker] = useState(false); // 轮次选择器下拉
   const [isGeneratingImage, setIsGeneratingImage] = useState(false); // 截图生成中
   const [shareImageUrl, setShareImageUrl] = useState<string | null>(null); // 长图预览 URL
+  const [copied, setCopied] = useState(false); // 复制图片到剪贴板成功提示
   const summaryScrollRef = useRef<HTMLDivElement>(null); // 分析报告滚动容器 ref
   const [collapsedSummary, setCollapsedSummary] = useState<Record<number, boolean>>({});
   const [collapsedModerator, setCollapsedModerator] = useState<Record<number, boolean>>({}); // 主持人卡片折叠状态
@@ -2046,12 +2047,38 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   // 分享报告 — html-to-image 截图（使用 SVG foreignObject，天然支持所有 CSS）
+  // 将图片 URL 转为 data URL（供 html-to-image 截图使用，避免跨域问题）
+  const imgToDataUrl = (src: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d')!.drawImage(img, 0, 0);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = reject;
+      img.src = src;
+    });
+
   const handleShareReport = async () => {
     const scrollEl = summaryScrollRef.current;
     if (!scrollEl) { alert('内容区域未就绪'); return; }
     setIsGeneratingImage(true);
+    let logoEl: HTMLDivElement | null = null;
     try {
       const { toPng } = await import('html-to-image');
+
+      // 预加载 Logo 并转为 data URL（确保 html-to-image 能正确渲染）
+      const logoDataUrl = await imgToDataUrl('/logo.png');
+
+      // 在截图内容顶部注入 Logo
+      logoEl = document.createElement('div');
+      logoEl.style.cssText = 'padding: 16px 20px 4px 20px; display: flex; align-items: center;';
+      logoEl.innerHTML = `<img src="${logoDataUrl}" style="height: 26px; width: auto;" alt="LeapCat.ai" />`;
+      scrollEl.insertBefore(logoEl, scrollEl.firstChild);
 
       // 临时解除滚动容器的 overflow 限制，让内容完全展开
       const saved = {
@@ -2086,6 +2113,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       const msg = err instanceof Error ? err.message : String(err);
       alert('生成图片失败: ' + msg);
     } finally {
+      // 移除临时注入的 Logo
+      if (logoEl && logoEl.parentNode) {
+        logoEl.parentNode.removeChild(logoEl);
+      }
       setIsGeneratingImage(false);
     }
   };
@@ -2099,19 +2130,33 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     link.click();
   };
 
-  // 调用系统分享
+  // 调用系统分享（移动端）或复制到剪贴板（桌面端）
   const handleNativeShare = async () => {
     if (!shareImageUrl) return;
     try {
       const res = await fetch(shareImageUrl);
       const blob = await res.blob();
       const file = new File([blob], '分析报告.png', { type: 'image/png' });
+
+      // 优先尝试系统原生分享（移动端）
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
         await navigator.share({ files: [file], title: '分析报告' });
-      } else {
-        // fallback: 直接下载
-        handleDownloadImage();
+        return;
       }
+
+      // 桌面端 fallback：复制图片到剪贴板
+      if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        const pngBlob = new Blob([await blob.arrayBuffer()], { type: 'image/png' });
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': pngBlob }),
+        ]);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+        return;
+      }
+
+      // 最终 fallback：直接下载
+      handleDownloadImage();
     } catch (err) {
       // 用户取消分享不报错
       if ((err as Error).name !== 'AbortError') {
@@ -3516,10 +3561,23 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </button>
               <button
                 onClick={handleNativeShare}
-                className="flex-1 py-3 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] text-white rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all shadow-[0_4px_20px_rgba(170,232,116,0.35)]"
+                className={`flex-1 py-3 rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all ${
+                  copied
+                    ? 'bg-[#333333] text-white shadow-[0_2px_12px_rgba(0,0,0,0.15)]'
+                    : 'bg-gradient-to-r from-[#AAE874] to-[#7BC74D] text-white shadow-[0_4px_20px_rgba(170,232,116,0.35)]'
+                }`}
               >
-                <Share2 className="w-4 h-4" strokeWidth={2.5} />
-                分享
+                {copied ? (
+                  <>
+                    <CheckCheck className="w-4 h-4" strokeWidth={2.5} />
+                    已复制到剪贴板
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" strokeWidth={2.5} />
+                    复制图片
+                  </>
+                )}
               </button>
             </div>
           </div>
