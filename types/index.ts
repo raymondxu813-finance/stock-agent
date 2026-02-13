@@ -118,6 +118,8 @@ export type RoundData = {
   userQuestion?: string;
   userMentionedAgentIds?: string[];
   userQuestionTime?: number; // 用户提问时间戳
+  // 是否被用户中止的轮次（仅第2轮+支持中止）
+  aborted?: boolean;
 };
 
 export type ModeratorAnalysis = {

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, X, FileText, SendHorizontal, Check, AlertCircle, Lightbulb } from 'lucide-react';
+import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, X, FileText, SendHorizontal, Square, Check, AlertCircle, Lightbulb } from 'lucide-react';
 import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
 import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
@@ -663,6 +663,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const isScrollingToBottomRef = useRef(false); // 标记是否正在滚动到底部
   const isUserInteractingRef = useRef(false); // 用户是否正在触摸/滚轮操作
   const interactionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null); // 用于中止第2轮+讨论
 
   // 获取所有轮次数据（向后兼容：如果没有 rounds，从 comments 和 moderatorAnalysis 构建）
   const getRounds = (): RoundData[] => {
@@ -913,50 +914,61 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     // 主持人开始思考
     setSummaryStreamStatus('thinking');
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            
-            if (data.type === 'section_change') {
-              // 段落切换 → 更新当前流式段落
-              setSummaryStreamStatus('typing');
-            } else if (data.type === 'chunk') {
-              // chunk 到达 → typing 状态
-              summaryBuffer += data.content;
-              // 直接使用累积的结构化文本作为流式显示内容
-              setSummaryStreamStatus('typing');
-              setCurrentSummaryText(summaryBuffer);
-            } else if (data.type === 'done') {
-              roundSummary = data.roundSummary;
-              updatedSession = data.session;
-              setCurrentSummaryText(summaryBuffer);
-              setSummaryStreamStatus(null); // 完成
-              if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
-                currentRoundPromptsRef.current.moderator = {
-                  systemPrompt: data.moderatorPrompts.systemPrompt,
-                  userPrompt: data.moderatorPrompts.userPrompt,
-                };
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === 'section_change') {
+                // 段落切换 → 更新当前流式段落
+                setSummaryStreamStatus('typing');
+              } else if (data.type === 'chunk') {
+                // chunk 到达 → typing 状态
+                summaryBuffer += data.content;
+                // 直接使用累积的结构化文本作为流式显示内容
+                setSummaryStreamStatus('typing');
+                setCurrentSummaryText(summaryBuffer);
+              } else if (data.type === 'done') {
+                roundSummary = data.roundSummary;
+                updatedSession = data.session;
+                setCurrentSummaryText(summaryBuffer);
+                setSummaryStreamStatus(null); // 完成
+                if (data.moderatorPrompts?.systemPrompt && data.moderatorPrompts?.userPrompt) {
+                  currentRoundPromptsRef.current.moderator = {
+                    systemPrompt: data.moderatorPrompts.systemPrompt,
+                    userPrompt: data.moderatorPrompts.userPrompt,
+                  };
+                }
+              } else if (data.type === 'error') {
+                setSummaryStreamStatus(null);
+                roundSummary = null;
+                updatedSession = null;
+                console.error('Summary stream error:', data.error);
               }
-            } else if (data.type === 'error') {
-              setSummaryStreamStatus(null);
-              roundSummary = null;
-              updatedSession = null;
-              console.error('Summary stream error:', data.error);
+            } catch (e) {
+              // 让 AbortError 向上传播
+              if (e instanceof DOMException && e.name === 'AbortError') throw e;
+              console.error('Error parsing summary SSE data:', e);
             }
-          } catch (e) {
-            console.error('Error parsing summary SSE data:', e);
           }
         }
       }
+    } catch (e) {
+      // AbortError 向上传播给调用方（startNextRound 的 catch 块）
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setSummaryStreamStatus(null);
+        throw e;
+      }
+      throw e;
     }
 
     setSummaryStreamStatus(null);
@@ -1516,86 +1528,95 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       throw new Error('Failed to get response stream');
     }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (!line || typeof line !== 'string') continue;
-        if (line.startsWith('data: ')) {
-          try {
-            const jsonStr = line.slice(6).trim();
-            if (!jsonStr) continue;
-            
-            const data = JSON.parse(jsonStr);
-            
-            if (!data || typeof data !== 'object') continue;
+        for (const line of lines) {
+          if (!line || typeof line !== 'string') continue;
+          if (line.startsWith('data: ')) {
+            try {
+              const jsonStr = line.slice(6).trim();
+              if (!jsonStr) continue;
+              
+              const data = JSON.parse(jsonStr);
+              
+              if (!data || typeof data !== 'object') continue;
 
-            if (data.type === 'start') {
-              // 收到 start 事件 → "thinking..." 状态
-              updateContent('', undefined, undefined, undefined, undefined, undefined, 'thinking');
-            } else if (data.type === 'tool_call') {
-              // 工具调用开始 → "tool_calling" 状态
-              updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'tool_calling', collectedToolCalls, data.toolName);
-            } else if (data.type === 'tool_result') {
-              // 工具调用完成 → 记录结果，保持 tool_calling 状态直到文本内容开始流式输出
-              collectedToolCalls.push({ toolName: data.toolName, args: data.args || {}, result: data.result });
-              updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'tool_calling', collectedToolCalls, data.toolName);
-            } else if (data.type === 'chunk') {
-              const chunkContent = data.content || '';
-              fullContent += chunkContent;
-              hasReceivedChunk = true;
-              // 实时更新 UI（打字机效果）— 隐藏 [SENTIMENT] 和 DSML 标记
-              const sentimentIdx = fullContent.indexOf('[SENTIMENT]');
-              let displayContent = sentimentIdx !== -1 ? fullContent.substring(0, sentimentIdx).trim() : fullContent;
-              // Strip DSML function call blocks (DeepSeek native format fallback)
-              const dsmlIdx = displayContent.search(/<[^>]*(?:function_calls|DSML)[^>]*>/i);
-              if (dsmlIdx !== -1) displayContent = displayContent.substring(0, dsmlIdx).trim();
-              // If SENTIMENT detected, main visible content is complete — stop showing "typing"
-              const effectiveStatus = sentimentIdx !== -1 ? undefined : 'typing';
-              updateContent(displayContent, targetAgentId, targetAgentName, undefined, undefined, undefined, effectiveStatus, collectedToolCalls.length > 0 ? collectedToolCalls : undefined, undefined);
-            } else if (data.type === 'done') {
-              // 后端已经去掉了 [SENTIMENT] 标记，直接用干净的内容
-              let doneContent = data.speech || data.review || data.reply || fullContent || '';
-              // 兜底：剥离可能残留的 DSML 标记（与 chunk 处理器一致）
-              const doneDsmlIdx = doneContent.search(/<[^>]*(?:function_calls|DSML|invoke)[^>]*>/i);
-              if (doneDsmlIdx !== -1) doneContent = doneContent.substring(0, doneDsmlIdx).trim();
-              const doneSentimentIdx = doneContent.indexOf('[SENTIMENT]');
-              if (doneSentimentIdx !== -1) doneContent = doneContent.substring(0, doneSentimentIdx).trim();
-              fullContent = doneContent;
-              if (data.targetAgentId && data.targetAgentName) {
-                targetAgentId = String(data.targetAgentId);
-                targetAgentName = String(data.targetAgentName);
+              if (data.type === 'start') {
+                // 收到 start 事件 → "thinking..." 状态
+                updateContent('', undefined, undefined, undefined, undefined, undefined, 'thinking');
+              } else if (data.type === 'tool_call') {
+                // 工具调用开始 → "tool_calling" 状态
+                updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'tool_calling', collectedToolCalls, data.toolName);
+              } else if (data.type === 'tool_result') {
+                // 工具调用完成 → 记录结果，保持 tool_calling 状态直到文本内容开始流式输出
+                collectedToolCalls.push({ toolName: data.toolName, args: data.args || {}, result: data.result });
+                updateContent(fullContent, targetAgentId, targetAgentName, undefined, undefined, undefined, 'tool_calling', collectedToolCalls, data.toolName);
+              } else if (data.type === 'chunk') {
+                const chunkContent = data.content || '';
+                fullContent += chunkContent;
+                hasReceivedChunk = true;
+                // 实时更新 UI（打字机效果）— 隐藏 [SENTIMENT] 和 DSML 标记
+                const sentimentIdx = fullContent.indexOf('[SENTIMENT]');
+                let displayContent = sentimentIdx !== -1 ? fullContent.substring(0, sentimentIdx).trim() : fullContent;
+                // Strip DSML function call blocks (DeepSeek native format fallback)
+                const dsmlIdx = displayContent.search(/<[^>]*(?:function_calls|DSML)[^>]*>/i);
+                if (dsmlIdx !== -1) displayContent = displayContent.substring(0, dsmlIdx).trim();
+                // If SENTIMENT detected, main visible content is complete — stop showing "typing"
+                const effectiveStatus = sentimentIdx !== -1 ? undefined : 'typing';
+                updateContent(displayContent, targetAgentId, targetAgentName, undefined, undefined, undefined, effectiveStatus, collectedToolCalls.length > 0 ? collectedToolCalls : undefined, undefined);
+              } else if (data.type === 'done') {
+                // 后端已经去掉了 [SENTIMENT] 标记，直接用干净的内容
+                let doneContent = data.speech || data.review || data.reply || fullContent || '';
+                // 兜底：剥离可能残留的 DSML 标记（与 chunk 处理器一致）
+                const doneDsmlIdx = doneContent.search(/<[^>]*(?:function_calls|DSML|invoke)[^>]*>/i);
+                if (doneDsmlIdx !== -1) doneContent = doneContent.substring(0, doneDsmlIdx).trim();
+                const doneSentimentIdx = doneContent.indexOf('[SENTIMENT]');
+                if (doneSentimentIdx !== -1) doneContent = doneContent.substring(0, doneSentimentIdx).trim();
+                fullContent = doneContent;
+                if (data.targetAgentId && data.targetAgentName) {
+                  targetAgentId = String(data.targetAgentId);
+                  targetAgentName = String(data.targetAgentName);
+                }
+                if (data.systemPrompt && data.userPrompt) {
+                  savedSystemPrompt = String(data.systemPrompt);
+                  savedUserPrompt = String(data.userPrompt);
+                }
+                if (data.sentiments && Array.isArray(data.sentiments) && data.sentiments.length > 0) {
+                  sentiments = data.sentiments;
+                }
+                // 合并后端返回的 toolCalls（如果有）
+                if (data.toolCalls && Array.isArray(data.toolCalls)) {
+                  // 优先用后端返回的完整 toolCalls
+                  collectedToolCalls.length = 0;
+                  collectedToolCalls.push(...data.toolCalls);
+                }
+                // 最终更新 UI — 不传 streamStatus 表示完成
+                updateContent(fullContent, targetAgentId, targetAgentName, savedSystemPrompt, savedUserPrompt, sentiments, undefined, collectedToolCalls.length > 0 ? collectedToolCalls : undefined, undefined);
+              } else if (data.type === 'error') {
+                const errorMessage = data.error ? String(data.error) : 'Unknown error occurred';
+                throw new Error(errorMessage);
               }
-              if (data.systemPrompt && data.userPrompt) {
-                savedSystemPrompt = String(data.systemPrompt);
-                savedUserPrompt = String(data.userPrompt);
-              }
-              if (data.sentiments && Array.isArray(data.sentiments) && data.sentiments.length > 0) {
-                sentiments = data.sentiments;
-              }
-              // 合并后端返回的 toolCalls（如果有）
-              if (data.toolCalls && Array.isArray(data.toolCalls)) {
-                // 优先用后端返回的完整 toolCalls
-                collectedToolCalls.length = 0;
-                collectedToolCalls.push(...data.toolCalls);
-              }
-              // 最终更新 UI — 不传 streamStatus 表示完成
-              updateContent(fullContent, targetAgentId, targetAgentName, savedSystemPrompt, savedUserPrompt, sentiments, undefined, collectedToolCalls.length > 0 ? collectedToolCalls : undefined, undefined);
-            } else if (data.type === 'error') {
-              const errorMessage = data.error ? String(data.error) : 'Unknown error occurred';
-              throw new Error(errorMessage);
+            } catch (e) {
+              // 让 AbortError 向上传播，不在此处吞掉
+              if (e instanceof DOMException && e.name === 'AbortError') throw e;
+              console.error('Error parsing SSE data:', e);
+              console.error('Problematic line:', line);
             }
-          } catch (e) {
-            console.error('Error parsing SSE data:', e);
-            console.error('Problematic line:', line);
           }
         }
       }
+    } catch (e) {
+      // AbortError 向上传播给调用方（startNextRound 的 catch 块）
+      if (e instanceof DOMException && e.name === 'AbortError') throw e;
+      // 其他 reader 错误也向上传播
+      throw e;
     }
 
     return { content: fullContent, targetAgentId, targetAgentName, systemPrompt: savedSystemPrompt, userPrompt: savedUserPrompt, sentiments, toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined };
@@ -1605,6 +1626,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   // 新架构：不再有针对性回复阶段，Agent在单次发言中组合回应用户+回应分歧
   const startNextRound = async (roundIndex: number, userQuestion?: string, userMentionedAgentIds?: string[]) => {
     if (!discussion.id || !discussion.sessionData || isLoading) return;
+
+    // 创建 AbortController，用于支持用户中止（第2轮+）
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     setIsLoading(true);
     setCurrentRoundIndex(roundIndex);
@@ -1637,18 +1662,32 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     try {
       const sessionData = discussion.sessionData;
 
-      // 获取上一轮的原始发言数据
-      const previousRoundData = rounds.length > 0 ? rounds[rounds.length - 1] : null;
-      const previousRoundComments = previousRoundData?.comments?.map(c => ({
-        agentId: c.agentId,
-        agentName: c.agentName,
-        content: c.content,
-      })) || [];
+      // 为每个 agent 查找本轮之前最近一次的发言（支持中止轮次后上下文不丢失）
+      const previousRoundComments = discussion.agents
+        .map(agent => {
+          for (let i = rounds.length - 1; i >= 0; i--) {
+            const comment = rounds[i].comments.find(
+              c => c.agentId === agent.id && c.type !== 'user'
+            );
+            if (comment) {
+              return {
+                agentId: comment.agentId,
+                agentName: comment.agentName,
+                content: comment.content,
+              };
+            }
+          }
+          return null;
+        })
+        .filter((c): c is { agentId: string; agentName: string; content: string } => c !== null);
 
       // ===== 每个Agent依次发言（单次speech，包含回应用户+回应分歧） =====
       setCurrentRoundStatus('speech');
 
       for (const agent of discussion.agents) {
+        // 主动检查是否已中止（避免发起不必要的 fetch）
+        if (abortController.signal.aborted) break;
+
         const response = await fetch('/api/agents/speech/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1662,6 +1701,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             userQuestion: userQuestion || undefined,
             userMentionedAgentIds: userMentionedAgentIds && userMentionedAgentIds.length > 0 ? userMentionedAgentIds : undefined,
           }),
+          signal: abortController.signal,
         });
 
         const speech = await handleStreamResponse(
@@ -1721,6 +1761,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           toolCalls: speech.toolCalls,
           completedAt: speechCompletedAt,
         });
+
+        // 每个 agent 完成后再次检查是否已中止
+        if (abortController.signal.aborted) break;
+      }
+
+      // 如果 for 循环因 abort break 出来（所有 agent 都完成了但 signal 被设置），跳过 summary
+      if (abortController.signal.aborted) {
+        throw new DOMException('Discussion aborted by user', 'AbortError');
       }
 
       // ===== 流式请求主持人总结 =====
@@ -1739,6 +1787,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           sessionData,
           ...(userQuestion ? { userQuestion } : {}),
         }),
+        signal: abortController.signal,
       });
 
       const { roundSummary, updatedSession } = await handleSummaryStream(summaryResponse);
@@ -1794,13 +1843,77 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         return new Map();
       });
     } catch (error) {
-      console.error('Error starting next round:', error);
-      setCurrentRoundStatus('idle');
-      setCurrentSummaryText('');
-      setCurrentRoundComments(new Map());
-      alert(`继续讨论失败：${error instanceof Error ? error.message : '未知错误'}`);
+      // 区分用户主动中止和其他错误
+      const isAbort = error instanceof DOMException && error.name === 'AbortError';
+
+      if (isAbort && speeches.length > 0) {
+        // 用户中止且有已完成的发言 → 保存为部分轮次
+        console.log(`[startNextRound] Aborted at round ${roundIndex}, saving ${speeches.length} completed speeches`);
+        const completedComments: AgentComment[] = speeches.map(s => ({
+          agentId: s.agentId,
+          agentName: s.agentName,
+          agentColor: discussion.agents.find(a => a.id === s.agentId)?.color || 'bg-gray-500',
+          content: s.content,
+          expanded: false,
+          type: 'speech' as const,
+          sentiments: s.sentiments,
+          toolCalls: dedupToolCalls(s.toolCalls),
+          completedAt: s.completedAt,
+        }));
+
+        const partialRound: RoundData = {
+          roundIndex,
+          comments: completedComments,
+          moderatorAnalysis: {
+            round: roundIndex,
+            consensusLevel: 0,
+            summary: '本轮讨论被用户中止，以下为已完成的发言。',
+            newPoints: [],
+            consensus: [],
+            disagreements: [],
+          },
+          prompts: {
+            agents: [...currentRoundPromptsRef.current.agents],
+          },
+          ...(userQuestion ? {
+            userQuestion,
+            userMentionedAgentIds: userMentionedAgentIds && userMentionedAgentIds.length > 0 ? userMentionedAgentIds : undefined,
+            userQuestionTime: userQuestionTimestamp || Date.now(),
+          } : {}),
+          aborted: true,
+        };
+
+        const updatedRounds = [...rounds, partialRound];
+        const updatedDiscussion = {
+          ...discussion,
+          rounds: updatedRounds,
+          comments: completedComments,
+        };
+        onUpdateDiscussion(updatedDiscussion);
+        saveDiscussionToHistory(updatedDiscussion);
+
+        setCurrentRoundStatus('complete');
+        setCurrentSummaryText('');
+        setSummaryStreamStatus(null);
+        setCurrentRoundComments(new Map());
+      } else if (isAbort) {
+        // 用户中止但无已完成发言 → 完全丢弃
+        console.log(`[startNextRound] Aborted at round ${roundIndex}, no completed speeches, discarding`);
+        setCurrentRoundStatus('idle');
+        setCurrentSummaryText('');
+        setSummaryStreamStatus(null);
+        setCurrentRoundComments(new Map());
+      } else {
+        // 其他错误：保持原有逻辑
+        console.error('Error starting next round:', error);
+        setCurrentRoundStatus('idle');
+        setCurrentSummaryText('');
+        setCurrentRoundComments(new Map());
+        alert(`继续讨论失败：${error instanceof Error ? error.message : '未知错误'}`);
+      }
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -1905,6 +2018,13 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       : 1;
     
     await startNextRound(nextRoundIndex);
+  };
+
+  // 中止当前讨论（仅第2轮+支持）
+  const handleStopDiscussion = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
   };
 
   return (
@@ -2123,8 +2243,16 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 );
               })}
 
+              {/* 中止轮次标识 */}
+              {(round as any).aborted && (
+                <div className="mx-5 my-3 flex items-center justify-center gap-2 py-3 rounded-2xl bg-[#FFF5F5] border border-[#FFE0E0]">
+                  <Square className="w-3.5 h-3.5 text-[#E05454] fill-[#E05454]" strokeWidth={0} />
+                  <span className="text-[13px] text-[#E05454] font-medium">本轮讨论已中止</span>
+                </div>
+              )}
+
               {/* Moderator Analysis - 参照 Figma 图片布局 */}
-              {(!(round as any)._isInProgress || (round as any)._showModerator) && (() => {
+              {!(round as any).aborted && (!(round as any)._isInProgress || (round as any)._showModerator) && (() => {
                 const isStreaming = !!(round as any)._summaryStreamStatus;
                 if (!round.moderatorAnalysis && !isStreaming) return null;
                 const isComplete = !isStreaming && (round.moderatorAnalysis?.consensusLevel ?? 0) > 0;
@@ -2720,33 +2848,45 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             />
           </div>
 
-          {/* Send Button — 固定在底部 */}
-          <button
-            onClick={() => {
-              if (userInput.trim()) {
-                handleUserSend();
-              } else {
-                handleContinueDiscussion();
-              }
-            }}
-            disabled={isLoading}
-            className={`
-              flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all
-              ${isLoading
-                ? 'bg-[#E8E8E8] cursor-not-allowed opacity-50'
-                : userInput.trim()
-                  ? 'bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]'
-                  : 'bg-[#AAE874]/70 active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.2)]'
-              }
-            `}
-            title={userInput.trim() ? '发送提问' : '继续下一轮讨论'}
-          >
-            {isLoading ? (
+          {/* Send / Stop Button — 四态 */}
+          {isLoading && currentRoundIndex > 1 ? (
+            /* 加载中 + 第2轮+：红色停止按钮 */
+            <button
+              onClick={handleStopDiscussion}
+              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-[#E05454] active:scale-95 shadow-[0_4px_16px_rgba(224,84,84,0.4)] hover:shadow-[0_6px_20px_rgba(224,84,84,0.5)]"
+              title="中止讨论"
+            >
+              <Square className="w-4 h-4 text-white fill-white" strokeWidth={0} />
+            </button>
+          ) : isLoading ? (
+            /* 加载中 + 第1轮：disabled spinner */
+            <button
+              disabled
+              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-[#E8E8E8] cursor-not-allowed opacity-50"
+              title="讨论进行中"
+            >
               <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <SendHorizontal className="w-5 h-5 text-white" strokeWidth={2.5} />
-            )}
-          </button>
+            </button>
+          ) : (
+            /* 空闲态：发送提问 / 继续下一轮 */
+            <button
+              onClick={() => {
+                if (userInput.trim()) {
+                  handleUserSend();
+                } else {
+                  handleContinueDiscussion();
+                }
+              }}
+              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]"
+              title={userInput.trim() ? '发送提问' : '继续下一轮讨论'}
+            >
+              {userInput.trim() ? (
+                <SendHorizontal className="w-5 h-5 text-white" strokeWidth={2.5} />
+              ) : (
+                <ArrowRight className="w-5 h-5 text-white" strokeWidth={2.5} />
+              )}
+            </button>
+          )}
         </div>
         {/* Safe area spacer — 独立于内容区域，不影响内容行高度 */}
         <div className="relative" style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
