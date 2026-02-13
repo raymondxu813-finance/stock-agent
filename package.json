@@ -1,6 +1,6 @@
 {
   "name": "stock-multiagent",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -12,6 +12,7 @@
     "@ai-sdk/openai": "^3.0.26",
     "ai": "^6.0.79",
     "clsx": "^2.0.0",
+    "html-to-image": "^1.11.13",
     "lucide-react": "^0.294.0",
     "next": "^14.0.0",
     "openai": "^6.18.0",

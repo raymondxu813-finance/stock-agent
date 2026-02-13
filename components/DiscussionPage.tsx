@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, X, FileText, SendHorizontal, Square, Check, AlertCircle, Lightbulb } from 'lucide-react';
+import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, X, FileText, SendHorizontal, Square, Check, AlertCircle, Lightbulb, Share2, Download } from 'lucide-react';
 import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
 import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
@@ -632,6 +632,10 @@ type DiscussionPageProps = {
 export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: DiscussionPageProps) {
   const [showSummary, setShowSummary] = useState(false);
   const [summaryRoundIndex, setSummaryRoundIndex] = useState<number | null>(null); // 分析报告弹窗显示的轮次（null=最新轮）
+  const [showRoundPicker, setShowRoundPicker] = useState(false); // 轮次选择器下拉
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false); // 截图生成中
+  const [shareImageUrl, setShareImageUrl] = useState<string | null>(null); // 长图预览 URL
+  const summaryScrollRef = useRef<HTMLDivElement>(null); // 分析报告滚动容器 ref
   const [collapsedSummary, setCollapsedSummary] = useState<Record<number, boolean>>({});
   const [collapsedModerator, setCollapsedModerator] = useState<Record<number, boolean>>({}); // 主持人卡片折叠状态
   const [isLoading, setIsLoading] = useState(false);
@@ -658,6 +662,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const contentRef = useRef<HTMLDivElement>(null);
+  const bottomBarRef = useRef<HTMLDivElement>(null);
+  const [bottomBarHeight, setBottomBarHeight] = useState(72); // 默认单行底部栏高度
   const lastScrollTop = useRef(0);
   const hasStartedRef = useRef(false);
   const isScrollingToBottomRef = useRef(false); // 标记是否正在滚动到底部
@@ -871,6 +877,19 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
   }, [rounds.length, currentRoundComments, summaryStreamStatus, currentSummaryText]);
+
+  // 监听底部栏高度变化（输入框多行时高度会变），用于定位浮动按钮
+  useEffect(() => {
+    const el = bottomBarRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setBottomBarHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // 自动开始第一轮讨论（如果还没有开始）
   useEffect(() => {
@@ -1998,7 +2017,6 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     setShowMentionPopup(false);
     if (textareaRef.current) {
       textareaRef.current.style.height = '40px';
-      textareaRef.current.style.borderRadius = '9999px';
       textareaRef.current.style.overflow = 'hidden';
     }
 
@@ -2024,6 +2042,82 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const handleStopDiscussion = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+    }
+  };
+
+  // 分享报告 — html-to-image 截图（使用 SVG foreignObject，天然支持所有 CSS）
+  const handleShareReport = async () => {
+    const scrollEl = summaryScrollRef.current;
+    if (!scrollEl) { alert('内容区域未就绪'); return; }
+    setIsGeneratingImage(true);
+    try {
+      const { toPng } = await import('html-to-image');
+
+      // 临时解除滚动容器的 overflow 限制，让内容完全展开
+      const saved = {
+        overflow: scrollEl.style.overflow,
+        maxHeight: scrollEl.style.maxHeight,
+        height: scrollEl.style.height,
+        flex: scrollEl.style.flex,
+      };
+      scrollEl.style.overflow = 'visible';
+      scrollEl.style.maxHeight = 'none';
+      scrollEl.style.height = 'auto';
+      scrollEl.style.flex = 'none';
+
+      // 等两帧让浏览器完成布局
+      await new Promise(r => requestAnimationFrame(r));
+      await new Promise(r => requestAnimationFrame(r));
+
+      const dataUrl = await toPng(scrollEl, {
+        pixelRatio: 2,
+        backgroundColor: '#FAFAFA',
+      });
+
+      // 恢复滚动容器样式
+      scrollEl.style.overflow = saved.overflow;
+      scrollEl.style.maxHeight = saved.maxHeight;
+      scrollEl.style.height = saved.height;
+      scrollEl.style.flex = saved.flex;
+
+      setShareImageUrl(dataUrl);
+    } catch (err: unknown) {
+      console.error('截图失败:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      alert('生成图片失败: ' + msg);
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
+  // 保存长图到本地
+  const handleDownloadImage = () => {
+    if (!shareImageUrl) return;
+    const link = document.createElement('a');
+    link.download = `分析报告_第${summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : 1)}轮.png`;
+    link.href = shareImageUrl;
+    link.click();
+  };
+
+  // 调用系统分享
+  const handleNativeShare = async () => {
+    if (!shareImageUrl) return;
+    try {
+      const res = await fetch(shareImageUrl);
+      const blob = await res.blob();
+      const file = new File([blob], '分析报告.png', { type: 'image/png' });
+      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: '分析报告' });
+      } else {
+        // fallback: 直接下载
+        handleDownloadImage();
+      }
+    } catch (err) {
+      // 用户取消分享不报错
+      if ((err as Error).name !== 'AbortError') {
+        console.error('分享失败:', err);
+        handleDownloadImage();
+      }
     }
   };
 
@@ -2743,40 +2837,43 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         </div>
       </div>
 
-      {/* Back to Bottom Button */}
-      {showScrollToBottom && (
+      {/* Floating Right Buttons — Prompts + Back to Bottom */}
+      <div className="absolute right-5 z-[9999] flex flex-col items-center gap-2" style={{ bottom: bottomBarHeight + 12 }}>
+        {/* Prompts Button */}
         <button
-          onClick={scrollToBottom}
-          className="absolute right-5 bottom-28 z-[9999] w-10 h-10 rounded-full shadow-[0_4px_20px_rgba(170,232,116,0.4)] flex items-center justify-center active:scale-95 transition-all hover:shadow-[0_6px_24px_rgba(170,232,116,0.5)]"
-          style={{ background: 'rgba(170,232,116,0.92)' }}
+          onClick={() => {
+            const currentRound = rounds[rounds.length - 1];
+            if (currentRound?.prompts) {
+              setCurrentRoundPrompts(currentRound.prompts);
+              setShowPromptsModal(true);
+            } else {
+              alert('当前轮次暂无prompts数据');
+            }
+          }}
+          className="w-10 h-10 rounded-full border border-[#E8E8E8] shadow-[0_2px_12px_rgba(0,0,0,0.08)] flex items-center justify-center active:scale-95 transition-all"
+          style={{ background: 'rgba(255,255,255,0.92)' }}
+          title="查看 Prompts"
         >
-          <ArrowDown className="w-5 h-5 text-white" strokeWidth={2.5} />
+          <FileText className="w-4 h-4 text-[#666666]" />
         </button>
-      )}
+        {/* Back to Bottom Button */}
+        {showScrollToBottom && (
+          <button
+            onClick={scrollToBottom}
+            className="w-10 h-10 rounded-full shadow-[0_4px_20px_rgba(170,232,116,0.4)] flex items-center justify-center active:scale-95 transition-all hover:shadow-[0_6px_24px_rgba(170,232,116,0.5)]"
+            style={{ background: 'rgba(170,232,116,0.92)' }}
+          >
+            <ArrowDown className="w-5 h-5 text-white" strokeWidth={2.5} />
+          </button>
+        )}
+      </div>
 
       {/* Bottom Action Bar — 与顶栏高度一致 */}
-      <div className="absolute bottom-0 left-0 right-0 z-50">
+      <div ref={bottomBarRef} className="absolute bottom-0 left-0 right-0 z-50">
         {/* Glassmorphic Background */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
 
         <div className={`relative flex gap-3 px-5 py-4 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
-          {/* Prompts Button — 大小与发送按钮一致 */}
-          <button
-            onClick={() => {
-              const currentRound = rounds[rounds.length - 1];
-              if (currentRound?.prompts) {
-                setCurrentRoundPrompts(currentRound.prompts);
-                setShowPromptsModal(true);
-              } else {
-                alert('当前轮次暂无prompts数据');
-              }
-            }}
-            className="flex-shrink-0 w-10 h-10 rounded-full border border-[#E8E8E8] bg-white flex items-center justify-center active:scale-95 transition-transform"
-            title="查看 Prompts"
-          >
-            <FileText className="w-4 h-4 text-[#666666]" />
-          </button>
-
           {/* Input Area + @-mention Popup */}
           <div className="flex-1 relative">
             {/* @-mention 弹窗 */}
@@ -2802,7 +2899,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             )}
 
-            {/* 可编辑输入框 — 与首页输入框高度一致，单行圆弧/多行圆角平滑过渡 */}
+            {/* 可编辑输入框 — 始终保持圆弧弧度（9999px），高度即时变化 */}
             <textarea
               ref={textareaRef}
               value={userInput}
@@ -2819,31 +2916,29 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 }
               }}
               disabled={isLoading}
-              placeholder={isLoading ? '专家们正在讨论中...' : '向专家提问'}
+              placeholder={isLoading ? '专家们正在讨论中...' : '向AI顾问提问...'}
               rows={1}
-              className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-[#F8F8F8] disabled:cursor-not-allowed"
+              className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-[#F8F8F8] disabled:cursor-not-allowed [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 height: '40px',
-                maxHeight: '156px',
+                maxHeight: '98px',
                 lineHeight: '20px',
                 paddingTop: '9px',
                 paddingBottom: '9px',
-                borderRadius: '9999px',
-                transition: 'border-radius 0.25s ease, border-color 0.2s, box-shadow 0.2s, height 0.15s ease',
+                borderRadius: '20px',
+                transition: 'border-color 0.2s, box-shadow 0.2s',
                 overflow: 'hidden',
               }}
               onInput={(e) => {
                 const target = e.target as HTMLTextAreaElement;
-                // 计算自然内容高度
-                target.style.height = '40px';
+                target.style.height = '0px';
                 const scrollH = target.scrollHeight;
-                const newH = Math.max(40, Math.min(scrollH, 156));
+                const newH = Math.max(40, Math.min(scrollH, 98));
                 target.style.height = newH + 'px';
-                // 动态切换 borderRadius 和多行状态
-                const multiLine = newH > 40;
-                target.style.borderRadius = multiLine ? '16px' : '9999px';
-                target.style.overflow = scrollH > 156 ? 'auto' : 'hidden';
-                setIsInputMultiLine(multiLine);
+                target.style.overflow = scrollH > 98 ? 'auto' : 'hidden';
+                setIsInputMultiLine(newH > 40);
+                // 自动滚动到文字底部
+                target.scrollTop = target.scrollHeight;
               }}
             />
           </div>
@@ -2969,35 +3064,70 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         {/* 背景遮罩 */}
         <div
           className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
-          onClick={() => setShowSummary(false)}
+          onClick={() => { setShowSummary(false); setShowRoundPicker(false); }}
         />
         {/* 抽屉内容 */}
         <div
-          className={`relative w-full bg-white rounded-t-[28px] max-h-[92vh] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
+          className={`relative w-full bg-[#FAFAFA] rounded-t-[28px] max-h-[92vh] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
             showSummary ? 'translate-y-0' : 'translate-y-full'
           }`}
         >
-            <div className="px-5 pt-3 pb-3 flex items-center justify-center relative bg-gradient-to-b from-white to-[#FAFAFA] border-b border-[#F0F0F0]/60">
-              <div className="w-10 h-1 bg-[#E0E0E0] rounded-full"></div>
-              <button
-                onClick={() => setShowSummary(false)}
-                className="absolute right-4 top-2.5 w-8 h-8 bg-[#F5F5F5] hover:bg-[#EEEEEE] rounded-full flex items-center justify-center active:scale-90 transition-all"
-              >
-                <X className="w-4 h-4 text-[#888888]" />
-              </button>
+            {/* 固定顶栏 — 分析报告 + 第N轮 + 关闭 */}
+            <div className="px-5 pt-3 pb-3 flex flex-col items-center bg-[#FAFAFA] flex-shrink-0">
+              <div className="w-10 h-1 bg-[#E0E0E0] rounded-full mb-3"></div>
+              <div className="w-full flex items-center">
+                <h2 className="text-[18px] font-extrabold text-[#1A1A1A] tracking-tight">分析报告</h2>
+                {/* 第N轮徽章 + 下拉选择器 */}
+                <div className="relative ml-2.5">
+                  <button
+                    onClick={() => {
+                      const available = rounds.filter(r => r.moderatorAnalysis?.consensusLevel > 0);
+                      if (available.length > 1) setShowRoundPicker(!showRoundPicker);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] rounded-full shadow-[0_2px_8px_rgba(170,232,116,0.3)] active:scale-95 transition-all"
+                  >
+                    <span className="text-white text-[11px] font-bold tracking-wide">第{summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round)}轮</span>
+                    {rounds.filter(r => r.moderatorAnalysis?.consensusLevel > 0).length > 1 && (
+                      <ChevronDown className={`w-3 h-3 text-white/80 transition-transform duration-200 ${showRoundPicker ? 'rotate-180' : ''}`} strokeWidth={2.5} />
+                    )}
+                  </button>
+                  {/* 下拉面板 */}
+                  {showRoundPicker && (
+                    <>
+                      <div className="fixed inset-0 z-[1]" onClick={() => setShowRoundPicker(false)} />
+                      <div className="absolute top-full left-0 mt-2 z-[2] bg-white rounded-xl shadow-[0_4px_24px_rgba(0,0,0,0.12)] border border-[#F0F0F0] py-1.5 min-w-[140px] max-h-[200px] overflow-y-auto">
+                        {rounds.filter(r => r.moderatorAnalysis?.consensusLevel > 0).map(r => {
+                          const currentDisplayRound = summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : 1);
+                          const isActive = r.roundIndex === currentDisplayRound;
+                          return (
+                            <button
+                              key={r.roundIndex}
+                              onClick={() => { setSummaryRoundIndex(r.roundIndex); setShowRoundPicker(false); }}
+                              className={`w-full px-3.5 py-2 flex items-center justify-between gap-3 text-left transition-colors ${isActive ? 'bg-[#AAE874]/10' : 'hover:bg-[#F8F8F8]'}`}
+                            >
+                              <span className={`text-[13px] font-medium ${isActive ? 'text-[#5BB536] font-bold' : 'text-[#333333]'}`}>第{r.roundIndex}轮</span>
+                              <span className={`text-[11px] ${isActive ? 'text-[#7BC74D]' : 'text-[#AAAAAA]'}`}>共识 {r.moderatorAnalysis.consensusLevel}%</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div className="flex-1" />
+                <button
+                  onClick={() => { setShowSummary(false); setShowRoundPicker(false); }}
+                  className="w-8 h-8 bg-[#F0F0F0] hover:bg-[#E8E8E8] rounded-full flex items-center justify-center active:scale-90 transition-all"
+                >
+                  <X className="w-4 h-4 text-[#888888]" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
-              <div className="p-5">
-                {/* Report Header */}
+            <div ref={summaryScrollRef} className="flex-1 overflow-y-auto bg-[#FAFAFA]">
+              <div className="p-5 pt-2">
+                {/* Report Header — 标题 */}
                 <div className="mb-6">
-                  <div className="flex items-center gap-3 mb-3">
-                    <h2 className="text-[24px] font-extrabold text-[#1A1A1A] tracking-tight">分析报告</h2>
-                    <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] rounded-full shadow-[0_2px_8px_rgba(170,232,116,0.3)]">
-                      <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
-                      <span className="text-white text-[11px] font-bold tracking-wide">第{summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round)}轮</span>
-                    </div>
-                  </div>
                   <h3 className="text-[18px] font-bold text-[#333333] leading-snug">{discussion.title}</h3>
                 </div>
 
@@ -3019,11 +3149,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           <p className="text-[14px] text-[#444444] leading-[1.75]">
                             {analysis.summary}
                           </p>
-                          {/* Stats Dashboard — 横排指标 */}
-                          <div className="flex items-center gap-3 mt-4 pt-3.5 border-t border-[#E8EEE0]/80">
+                          {/* Stats Dashboard — 横排指标（等高豆腐块） */}
+                          <div className="grid grid-cols-4 gap-2 mt-4 pt-3.5 border-t border-[#E8EEE0]/80">
                             {/* 共识度 */}
-                            <div className="flex items-center gap-2 px-3 py-2 bg-[#FAFAFA] rounded-xl">
-                              <div className="relative w-9 h-9 flex-shrink-0">
+                            <div className="flex flex-col items-center justify-center py-2.5 bg-[#FAFAFA] rounded-xl">
+                              <div className="relative w-9 h-9 flex-shrink-0 mb-1.5">
                                 <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
                                   <circle cx="18" cy="18" r="14" fill="none" stroke="#F0F0F0" strokeWidth="2.5" />
                                   <circle cx="18" cy="18" r="14" fill="none"
@@ -3033,38 +3163,51 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                 </svg>
                                 <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#333333]">{analysis.consensusLevel}</span>
                               </div>
-                              <div className="flex flex-col">
-                                <span className="text-[10px] text-[#AAAAAA] leading-none">共识度</span>
-                                <span className={`text-[13px] font-bold leading-tight ${analysis.consensusLevel >= 70 ? 'text-[#7BC74D]' : analysis.consensusLevel >= 40 ? 'text-[#F59E0B]' : 'text-[#E05454]'}`}>{analysis.consensusLevel}%</span>
-                              </div>
+                              <span className="text-[10px] text-[#AAAAAA] leading-none">共识度</span>
                             </div>
-                            {/* 参与专家 */}
-                            <div className="flex items-center gap-2 px-3 py-2 bg-[#FAFAFA] rounded-xl">
-                              <div className="flex -space-x-1">
-                                {discussion.agents.slice(0, 4).map((agent, i) => (
-                                  <div key={i} className="w-6 h-6 rounded-full border-[1.5px] border-white overflow-hidden shadow-[0_0_0_0.5px_rgba(0,0,0,0.06)]">
-                                    <AgentAvatar type={getAvatarType(agent)} size={24} />
-                                  </div>
-                                ))}
-                                {discussion.agents.length > 4 && (
-                                  <div className="w-6 h-6 rounded-full border-[1.5px] border-white bg-[#F0F0F0] flex items-center justify-center shadow-[0_0_0_0.5px_rgba(0,0,0,0.06)]">
-                                    <span className="text-[9px] font-bold text-[#999999]">+{discussion.agents.length - 4}</span>
-                                  </div>
-                                )}
-                              </div>
-                              <span className="text-[11px] text-[#888888] font-medium whitespace-nowrap">{discussion.agents.length}位</span>
+                            {/* 参与专家 — 单行堆叠，自适应不溢出 */}
+                            <div className="flex flex-col items-center justify-center py-2.5 bg-[#FAFAFA] rounded-xl">
+                              {(() => {
+                                const allAgents = discussion.agents;
+                                const total = allAgents.length;
+                                // 头像大小与话题维度对比保持一致（20px）
+                                const avatarSize = 20;
+                                // 固定容器宽度，头像均匀分布
+                                const containerWidth = 56;
+                                const step = total <= 1 ? 0 : (containerWidth - avatarSize) / (total - 1);
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-center mb-1.5" style={{ height: 36 }}>
+                                      <div className="relative" style={{ width: containerWidth, height: avatarSize }}>
+                                        {allAgents.map((agent, i) => (
+                                          <div
+                                            key={i}
+                                            className="absolute rounded-full border-[1.5px] border-white overflow-hidden shadow-[0_0_0_0.5px_rgba(0,0,0,0.06)]"
+                                            style={{ left: i * step, width: avatarSize, height: avatarSize, zIndex: i + 1 }}
+                                          >
+                                            <AgentAvatar type={getAvatarType(agent)} size={avatarSize} />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <span className="text-[10px] text-[#AAAAAA] leading-none">{total}位专家</span>
+                                  </>
+                                );
+                              })()}
                             </div>
-                            <div className="flex-1" />
-                            {/* 共识/分歧数 */}
-                            <div className="flex items-center gap-2">
-                              <div className="flex items-center gap-1 px-2.5 py-1.5 bg-[#AAE874]/10 rounded-lg">
-                                <Check className="w-3 h-3 text-[#7BC74D]" strokeWidth={3} />
-                                <span className="text-[12px] text-[#7BC74D] font-bold">{analysis.consensus.length}</span>
+                            {/* 共识数 */}
+                            <div className="flex flex-col items-center justify-center py-2.5 rounded-xl" style={{ background: 'rgba(170,232,116,0.08)' }}>
+                              <div className="w-9 h-9 rounded-full flex items-center justify-center mb-1.5" style={{ background: 'rgba(170,232,116,0.15)' }}>
+                                <Check className="w-4 h-4 text-[#7BC74D]" strokeWidth={3} />
                               </div>
-                              <div className="flex items-center gap-1 px-2.5 py-1.5 bg-[#F59E0B]/10 rounded-lg">
-                                <AlertCircle className="w-3 h-3 text-[#F59E0B]" strokeWidth={2.5} />
-                                <span className="text-[12px] text-[#F59E0B] font-bold">{analysis.disagreements.length}</span>
+                              <span className="text-[10px] text-[#AAAAAA] leading-none">共识 <span className="text-[#7BC74D] font-bold">{analysis.consensus.length}</span></span>
+                            </div>
+                            {/* 分歧数 */}
+                            <div className="flex flex-col items-center justify-center py-2.5 rounded-xl" style={{ background: 'rgba(245,158,11,0.05)' }}>
+                              <div className="w-9 h-9 rounded-full flex items-center justify-center mb-1.5" style={{ background: 'rgba(245,158,11,0.12)' }}>
+                                <AlertCircle className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
                               </div>
+                              <span className="text-[10px] text-[#AAAAAA] leading-none">分歧 <span className="text-[#F59E0B] font-bold">{analysis.disagreements.length}</span></span>
                             </div>
                           </div>
                         </div>
@@ -3322,16 +3465,66 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             </div>
 
-            <div className="p-5 border-t border-[#F0F0F0]/60 bg-gradient-to-t from-white via-white to-white/80 backdrop-blur-sm">
+            <div className="p-5 bg-[#FAFAFA]">
               <button
-                onClick={() => setShowSummary(false)}
-                className="w-full py-3.5 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] text-white rounded-2xl text-[14px] font-bold active:scale-[0.97] transition-all shadow-[0_4px_20px_rgba(170,232,116,0.35)] hover:shadow-[0_6px_24px_rgba(170,232,116,0.45)]"
+                onClick={handleShareReport}
+                disabled={isGeneratingImage}
+                className="w-full py-3.5 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] text-white rounded-2xl text-[14px] font-bold active:scale-[0.97] transition-all shadow-[0_4px_20px_rgba(170,232,116,0.35)] hover:shadow-[0_6px_24px_rgba(170,232,116,0.45)] flex items-center justify-center gap-2 disabled:opacity-60"
               >
-                关闭
+                {isGeneratingImage ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    生成中...
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-4 h-4" strokeWidth={2.5} />
+                    分享报告
+                  </>
+                )}
               </button>
             </div>
           </div>
         </div>
+
+      {/* 长图预览浮层 */}
+      {shareImageUrl && (
+        <div className="absolute inset-0 z-[20000] flex items-center justify-center">
+          {/* 背景遮罩 */}
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShareImageUrl(null)} />
+          {/* 预览内容 */}
+          <div className="relative z-[1] w-[90%] max-h-[85vh] flex flex-col items-center gap-4">
+            {/* 关闭按钮 */}
+            <button
+              onClick={() => setShareImageUrl(null)}
+              className="absolute -top-2 -right-2 w-8 h-8 bg-white/90 rounded-full flex items-center justify-center shadow-lg active:scale-90 transition-all z-[2]"
+            >
+              <X className="w-4 h-4 text-[#666666]" />
+            </button>
+            {/* 图片预览 */}
+            <div className="flex-1 min-h-0 overflow-y-auto rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.2)]">
+              <img src={shareImageUrl} alt="分析报告长图" className="w-full block" />
+            </div>
+            {/* 操作按钮 */}
+            <div className="flex gap-3 w-full">
+              <button
+                onClick={handleDownloadImage}
+                className="flex-1 py-3 bg-white text-[#333333] rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all shadow-[0_2px_12px_rgba(0,0,0,0.1)]"
+              >
+                <Download className="w-4 h-4" strokeWidth={2.5} />
+                保存图片
+              </button>
+              <button
+                onClick={handleNativeShare}
+                className="flex-1 py-3 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] text-white rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all shadow-[0_4px_20px_rgba(170,232,116,0.35)]"
+              >
+                <Share2 className="w-4 h-4" strokeWidth={2.5} />
+                分享
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

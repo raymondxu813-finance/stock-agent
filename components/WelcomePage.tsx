@@ -168,7 +168,9 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [activeTopicIndex, setActiveTopicIndex] = useState(0);
+  const [isInputMultiLine, setIsInputMultiLine] = useState(false);
   const topicsScrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // agent 选择状态（初始为空，由 useEffect 从 localStorage 加载或随机生成）
   const [selectedAgents, setSelectedAgents] = useState<typeof ALL_AGENTS>([]);
 
@@ -513,21 +515,42 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
         <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
 
         {/* Input Bar Container */}
-        <div className="relative flex items-center gap-3 px-5 py-4">
+        <div className={`relative flex gap-3 px-5 py-4 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
           {/* Input Field */}
           <div className="flex-1 relative">
-            <input
-              type="text"
+            <textarea
+              ref={textareaRef}
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleStartDiscussion()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleStartDiscussion();
+                }
+              }}
               placeholder="输入话题，开始讨论..."
-              className="block w-full px-5 bg-white border border-[#E8E8E8] rounded-full text-[14px] text-black placeholder:text-[#AAAAAA] focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] transition-all shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+              rows={1}
+              className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 height: '40px',
+                maxHeight: '98px',
                 lineHeight: '20px',
                 paddingTop: '9px',
                 paddingBottom: '9px',
+                borderRadius: '20px',
+                transition: 'border-color 0.2s, box-shadow 0.2s',
+                overflow: 'hidden',
+              }}
+              onInput={(e) => {
+                const target = e.target as HTMLTextAreaElement;
+                target.style.height = '0px';
+                const scrollH = target.scrollHeight;
+                const newH = Math.max(40, Math.min(scrollH, 98));
+                target.style.height = newH + 'px';
+                target.style.overflow = scrollH > 98 ? 'auto' : 'hidden';
+                setIsInputMultiLine(newH > 40);
+                // 自动滚动到文字底部
+                target.scrollTop = target.scrollHeight;
               }}
             />
           </div>
