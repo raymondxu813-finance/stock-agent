@@ -42,7 +42,7 @@ export function AgentSelectionSheet({
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-4">
           <div>
-            <h2 className="text-[18px] font-bold text-black">AI 顾问团</h2>
+            <h2 className="text-[18px] font-bold text-black">AI 专家团</h2>
             <p className="text-[12px] text-[#999999] mt-0.5">
               已选 <span className={`font-bold ${selectedAgents.length >= minSlots ? 'text-[#7BC74D]' : 'text-[#F59E0B]'}`}>{selectedAgents.length}</span>/{maxSlots} 位
               <span className="text-[#CCCCCC] ml-1">（至少{minSlots}位）</span>
@@ -120,6 +120,8 @@ export function AgentSelectionSheet({
             })}
           </div>
         </div>
+        {/* Safe area spacer for iPhone */}
+        <div style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
       </div>
     </>
   );

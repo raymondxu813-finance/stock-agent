@@ -1358,6 +1358,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           },
         };
 
+        // 将所有状态更新放入同一个 setTimeout，确保 onUpdateDiscussion
+        // 与 currentRoundComments/Status 清空在同一个 React 批次中执行，
+        // 避免中间状态导致 getRounds() 返回空数组引发滚动跳顶
         setTimeout(() => {
           const updatedDiscussion = {
             ...discussion,
@@ -1368,11 +1371,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           };
           onUpdateDiscussion(updatedDiscussion);
           saveDiscussionToHistory(updatedDiscussion);
+          setCurrentRoundStatus('complete');
+          setCurrentSummaryText('');
+          setCurrentRoundComments(new Map());
         }, 0);
 
-        setCurrentRoundStatus('complete');
-        setCurrentSummaryText('');
-        return new Map();
+        return prev;
       });
     } catch (error) {
       console.error('Error starting first round:', error);
@@ -1705,7 +1709,17 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       // ===== 每个Agent依次发言（单次speech，包含回应用户+回应分歧） =====
       setCurrentRoundStatus('speech');
 
-      for (const agent of discussion.agents) {
+      // 按 @ 顺序重排：被 @ 的 agent 优先发言，未 @ 的保持原序排在后面
+      let orderedAgents = discussion.agents;
+      if (userMentionedAgentIds && userMentionedAgentIds.length > 0) {
+        const mentioned = userMentionedAgentIds
+          .map(id => discussion.agents.find(a => a.id === id))
+          .filter((a): a is typeof discussion.agents[number] => !!a);
+        const notMentioned = discussion.agents.filter(a => !userMentionedAgentIds.includes(a.id));
+        orderedAgents = [...mentioned, ...notMentioned];
+      }
+
+      for (const agent of orderedAgents) {
         // 主动检查是否已中止（避免发起不必要的 fetch）
         if (abortController.signal.aborted) break;
 
@@ -1814,7 +1828,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       const { roundSummary, updatedSession } = await handleSummaryStream(summaryResponse);
 
       // 收集所有 comments
-      setCurrentRoundComments(() => {
+      setCurrentRoundComments(prev => {
         const allComments: AgentComment[] = speeches.map(s => ({
           agentId: s.agentId,
           agentName: s.agentName,
@@ -1847,6 +1861,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
         const updatedRounds = [...rounds, newRound];
 
+        // 同第一轮逻辑：将状态清空与 onUpdateDiscussion 放入同一批次，
+        // 防止 getRounds() 在中间状态返回缺失当前轮数据导致滚动跳顶
         setTimeout(() => {
           const updatedDiscussion = {
             ...discussion,
@@ -1857,11 +1873,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           };
           onUpdateDiscussion(updatedDiscussion);
           saveDiscussionToHistory(updatedDiscussion);
+          setCurrentRoundStatus('complete');
+          setCurrentSummaryText('');
+          setCurrentRoundComments(new Map());
         }, 0);
 
-        setCurrentRoundStatus('complete');
-        setCurrentSummaryText('');
-        return new Map();
+        return prev;
       });
     } catch (error) {
       // 区分用户主动中止和其他错误
@@ -1941,17 +1958,23 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   // ===================== 用户输入相关 =====================
 
   const parseMentions = (text: string): string[] => {
-    const mentionedIds: string[] = [];
+    // 按名字长度降序做贪心匹配，但记录首次出现位置用于排序
     const agentNames = discussion.agents.map(a => a.name).filter(Boolean).sort((a, b) => b.length - a.length);
+    const found: { id: string; index: number }[] = [];
+    const seenIds = new Set<string>();
     for (const name of agentNames) {
-      if (text.includes(`@${name}`)) {
+      const idx = text.indexOf(`@${name}`);
+      if (idx !== -1) {
         const agent = discussion.agents.find(a => a.name === name);
-        if (agent && !mentionedIds.includes(agent.id)) {
-          mentionedIds.push(agent.id);
+        if (agent && !seenIds.has(agent.id)) {
+          seenIds.add(agent.id);
+          found.push({ id: agent.id, index: idx });
         }
       }
     }
-    return mentionedIds;
+    // 按文本中首次 @ 的位置升序排列，确保返回顺序与用户输入一致
+    found.sort((a, b) => a.index - b.index);
+    return found.map(f => f.id);
   };
 
   const buildHistoryContext = (): string => {
@@ -2200,23 +2223,28 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         </div>
 
         {/* AnalysisReportEntry — 独立层，不受顶栏磨砂遮挡 */}
-        {rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) && (
-          <div className="px-5 py-1.5">
-            <button
-              onClick={() => { setSummaryRoundIndex(null); setShowSummary(true); }}
-              className="w-full rounded-2xl px-4 py-0 h-10 border border-[#AAE874]/25 active:scale-[0.98] transition-all duration-200 flex items-center gap-3 group shadow-[0_2px_8px_rgba(170,232,116,0.12)]"
-              style={{ background: 'linear-gradient(135deg, rgba(240,250,230,0.95), rgba(255,255,255,0.95))' }}
-            >
-              <FileText className="w-4 h-4 text-[#7BC74D] flex-shrink-0" strokeWidth={2} />
-              <span className="text-[14px] font-bold text-[#5BB536]">分析报告</span>
-              <span className="px-2 py-0.5 bg-gradient-to-r from-[#AAE874]/20 to-[#7BC74D]/15 text-[10px] text-[#7BC74D] font-bold rounded-full">
-                第 {rounds[rounds.length - 1]?.roundIndex ?? 1} 轮
-              </span>
-              <span className="flex-1" />
-              <ChevronRight className="w-4 h-4 text-[#7BC74D] group-hover:translate-x-0.5 transition-all duration-200" strokeWidth={2.5} />
-            </button>
-          </div>
-        )}
+        {(() => {
+          const completedRounds = rounds.filter(r => !(r as any)._isInProgress && r.moderatorAnalysis?.consensusLevel > 0);
+          if (completedRounds.length === 0) return null;
+          const latestCompleted = completedRounds[completedRounds.length - 1];
+          return (
+            <div className="px-5 py-1.5">
+              <button
+                onClick={() => { setSummaryRoundIndex(latestCompleted.roundIndex); setShowSummary(true); }}
+                className="w-full rounded-2xl px-4 py-0 h-10 border border-[#AAE874]/25 active:scale-[0.98] transition-all duration-200 flex items-center gap-3 group shadow-[0_2px_8px_rgba(170,232,116,0.12)]"
+                style={{ background: 'linear-gradient(135deg, rgba(240,250,230,0.95), rgba(255,255,255,0.95))' }}
+              >
+                <FileText className="w-4 h-4 text-[#7BC74D] flex-shrink-0" strokeWidth={2} />
+                <span className="text-[14px] font-bold text-[#5BB536]">分析报告</span>
+                <span className="px-2 py-0.5 bg-gradient-to-r from-[#AAE874]/20 to-[#7BC74D]/15 text-[10px] text-[#7BC74D] font-bold rounded-full">
+                  第 {latestCompleted.roundIndex} 轮
+                </span>
+                <span className="flex-1" />
+                <ChevronRight className="w-4 h-4 text-[#7BC74D] group-hover:translate-x-0.5 transition-all duration-200" strokeWidth={2.5} />
+              </button>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Content — 全屏滚动，paddingTop 留出顶栏+分析报告按钮高度，滚动后内容从 header 磨砂层后面穿过 */}
@@ -2428,25 +2456,35 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     {/* 可折叠内容区 */}
                     {!isModeratorCollapsed && (
                       <>
-                        {/* Consensus Meter */}
-                        {isComplete && (
+                        {/* Consensus Meter — 流式阶段也实时显示 */}
+                        {(() => {
+                          // 流式阶段从 currentSummaryText 实时提取共识度
+                          let streamingCl = 0;
+                          if (isStreaming && currentSummaryText) {
+                            const clMatch = currentSummaryText.match(/【共识度】\s*(\d+)/);
+                            if (clMatch) streamingCl = Math.min(100, Math.max(0, parseInt(clMatch[1]) || 0));
+                          }
+                          const displayCl = isComplete ? cl : streamingCl;
+                          if (displayCl <= 0) return null;
+                          return (
                           <div className="px-5 pt-2 pb-4">
                             <div className="flex items-baseline justify-between mb-2">
                               <span className="text-[13px] text-[#666666] font-medium">共识度</span>
-                              <span className={`text-[18px] font-bold ${cl >= 70 ? 'text-[#AAE874]' : 'text-[#F59E0B]'}`}>{cl}%</span>
+                              <span className={`text-[18px] font-bold ${displayCl >= 70 ? 'text-[#AAE874]' : 'text-[#F59E0B]'}`}>{displayCl}%</span>
                             </div>
                             {/* Progress Bar */}
                             <div className="relative h-2 bg-[#F0F0F0] rounded-full overflow-hidden">
                               <div
                                 className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
                                 style={{
-                                  width: `${cl}%`,
-                                  background: `linear-gradient(90deg, #F59E0B 0%, ${cl >= 70 ? '#AAE874' : '#FFD93D'} 100%)`
+                                  width: `${displayCl}%`,
+                                  background: `linear-gradient(90deg, #F59E0B 0%, ${displayCl >= 70 ? '#AAE874' : '#FFD93D'} 100%)`
                                 }}
                               />
                             </div>
                           </div>
-                        )}
+                          );
+                        })()}
 
                         {/* Summary & Sections */}
                         <div className="px-5 pb-5 space-y-4">
@@ -2845,7 +2883,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                   <SentimentSection items={ma.sentimentSummary} agents={discussion.agents} compact />
                                 )}
 
-                                {/* 查看完整分析报告 */}
+                                {/* 查看完整分析报告 — 仅已完成轮次显示 */}
+                                {!(round as any)._isInProgress && (round.moderatorAnalysis?.consensusLevel ?? 0) > 0 && (
                                 <div className="pt-2 border-t border-[#F0F0F0]/60">
                                   <button
                                     onClick={() => { setSummaryRoundIndex(round.roundIndex); setShowSummary(true); }}
@@ -2856,6 +2895,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                     <ChevronRight className="w-3.5 h-3.5" />
                                   </button>
                                 </div>
+                                )}
                               </>
                             );
                           })()}
@@ -2910,6 +2950,29 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
         {/* ===== 统一布局（形变动画） ===== */}
         <div className={`relative flex px-5 py-4 ${bottomBarMode === 'edit' && isInputMultiLine ? 'items-end' : 'items-center'}`}>
+
+          {/* @-mention 弹窗 — 放在外层容器避免被 overflow:hidden 裁剪 */}
+          {bottomBarMode === 'edit' && showMentionPopup && (
+            <div className="absolute bottom-full left-[64px] right-[64px] mb-2 bg-white rounded-2xl border border-[#E8E8E8] shadow-[0_4px_20px_rgba(0,0,0,0.12)] overflow-hidden z-[60]">
+              <div className="px-3 py-2 text-[11px] text-[#999999] font-medium border-b border-[#F0F0F0]">选择要 @的专家</div>
+              {discussion.agents
+                .filter(a => !mentionFilter || a.name.includes(mentionFilter))
+                .map(agent => (
+                  <button
+                    key={agent.id}
+                    onClick={() => handleSelectMention(agent)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#F8F8F8] active:bg-[#F0F0F0] transition-colors"
+                  >
+                    <AgentAvatar type={getAvatarType(agent)} size={28} />
+                    <span className="text-[14px] font-medium text-[#333333]">{agent.name}</span>
+                  </button>
+                ))
+              }
+              {discussion.agents.filter(a => !mentionFilter || a.name.includes(mentionFilter)).length === 0 && (
+                <div className="px-3 py-3 text-[13px] text-[#999999] text-center">无匹配的专家</div>
+              )}
+            </div>
+          )}
 
           {/* ── 左侧按钮：图标旋转切换 ── */}
           <button
@@ -2967,29 +3030,6 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               minWidth: 0,
             }}
           >
-            {/* @-mention 弹窗 */}
-            {bottomBarMode === 'edit' && showMentionPopup && (
-              <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-2xl border border-[#E8E8E8] shadow-[0_4px_20px_rgba(0,0,0,0.12)] overflow-hidden z-[60]">
-                <div className="px-3 py-2 text-[11px] text-[#999999] font-medium border-b border-[#F0F0F0]">选择要 @的专家</div>
-                {discussion.agents
-                  .filter(a => !mentionFilter || a.name.includes(mentionFilter))
-                  .map(agent => (
-                    <button
-                      key={agent.id}
-                      onClick={() => handleSelectMention(agent)}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#F8F8F8] active:bg-[#F0F0F0] transition-colors"
-                    >
-                      <AgentAvatar type={getAvatarType(agent)} size={28} />
-                      <span className="text-[14px] font-medium text-[#333333]">{agent.name}</span>
-                    </button>
-                  ))
-                }
-                {discussion.agents.filter(a => !mentionFilter || a.name.includes(mentionFilter)).length === 0 && (
-                  <div className="px-3 py-3 text-[13px] text-[#999999] text-center">无匹配的专家</div>
-                )}
-              </div>
-            )}
-
             {/* 可编辑输入框 */}
             <textarea
               ref={textareaRef}
@@ -3214,8 +3254,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     }}
                     className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-gradient-to-r from-[#AAE874] to-[#7BC74D] rounded-full shadow-[0_2px_8px_rgba(170,232,116,0.3)] active:scale-95 transition-all"
                   >
-                    <span className="text-white text-[11px] font-bold tracking-wide">第{summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : discussion.moderatorAnalysis.round)}轮</span>
-                    {rounds.filter(r => r.moderatorAnalysis?.consensusLevel > 0).length > 1 && (
+                    <span className="text-white text-[11px] font-bold tracking-wide">第{summaryRoundIndex ?? (() => { const cr = rounds.filter(r => !(r as any)._isInProgress && (r.moderatorAnalysis?.consensusLevel ?? 0) > 0); return cr.length > 0 ? cr[cr.length - 1].roundIndex : (discussion.moderatorAnalysis?.round ?? 1); })()}轮</span>
+                    {rounds.filter(r => !(r as any)._isInProgress && (r.moderatorAnalysis?.consensusLevel ?? 0) > 0).length > 1 && (
                       <ChevronDown className={`w-3 h-3 text-white/80 transition-transform duration-200 ${showRoundPicker ? 'rotate-180' : ''}`} strokeWidth={2.5} />
                     )}
                   </button>
@@ -3224,8 +3264,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     <>
                       <div className="fixed inset-0 z-[1]" onClick={() => setShowRoundPicker(false)} />
                       <div className="absolute top-full left-0 mt-2 z-[2] bg-white rounded-xl shadow-[0_4px_24px_rgba(0,0,0,0.12)] border border-[#F0F0F0] py-1.5 min-w-[140px] max-h-[200px] overflow-y-auto">
-                        {rounds.filter(r => r.moderatorAnalysis?.consensusLevel > 0).map(r => {
-                          const currentDisplayRound = summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : 1);
+                        {rounds.filter(r => !(r as any)._isInProgress && (r.moderatorAnalysis?.consensusLevel ?? 0) > 0).map(r => {
+                          const crForPicker = rounds.filter(rr => !(rr as any)._isInProgress && (rr.moderatorAnalysis?.consensusLevel ?? 0) > 0);
+                          const currentDisplayRound = summaryRoundIndex ?? (crForPicker.length > 0 ? crForPicker[crForPicker.length - 1].roundIndex : 1);
                           const isActive = r.roundIndex === currentDisplayRound;
                           return (
                             <button
@@ -3261,10 +3302,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
                 {/* Summary Content */}
                 {(() => {
-                  // 根据 summaryRoundIndex 选择对应轮次，null 表示最新轮
+                  // 根据 summaryRoundIndex 选择对应轮次，null 表示最新已完成轮次
+                  const completedRoundsForModal = rounds.filter(r => !(r as any)._isInProgress && (r.moderatorAnalysis?.consensusLevel ?? 0) > 0);
                   const targetRound = summaryRoundIndex !== null
-                    ? rounds.find(r => r.roundIndex === summaryRoundIndex) || (rounds.length > 0 ? rounds[rounds.length - 1] : null)
-                    : (rounds.length > 0 ? rounds[rounds.length - 1] : null);
+                    ? rounds.find(r => r.roundIndex === summaryRoundIndex) || (completedRoundsForModal.length > 0 ? completedRoundsForModal[completedRoundsForModal.length - 1] : null)
+                    : (completedRoundsForModal.length > 0 ? completedRoundsForModal[completedRoundsForModal.length - 1] : null);
                   const analysis = targetRound?.moderatorAnalysis || discussion.moderatorAnalysis;
                   if (!analysis) return <p className="text-[13px] text-[#999999]">暂无分析数据</p>;
 

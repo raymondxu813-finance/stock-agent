@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { X, Trash2 } from 'lucide-react';
+import { X, Trash2, Sun, Moon } from 'lucide-react';
 import type { Discussion } from '@/types';
 
 // 历史话题类型（保存完整的Discussion对象）
@@ -182,6 +182,7 @@ function SwipeableItem({ topic, onSelect, onDelete, disabled }: {
 export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading = false }: HistoryTopicsDrawerProps) {
   const [historyTopics, setHistoryTopics] = useState<HistoryTopic[]>([]);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
 
   // 从localStorage加载历史话题
   useEffect(() => {
@@ -277,7 +278,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
         }`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0F0F0] flex-shrink-0">
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0">
           <h2 className="text-[19px] font-bold text-black">历史讨论</h2>
           <button
             onClick={onClose}
@@ -322,38 +323,54 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
           )}
         </div>
 
-        {/* Footer — 清空历史 */}
-        {historyTopics.length > 0 && (
-          <div className="flex-shrink-0 border-t border-[#F0F0F0] px-5 py-3">
-            {showClearConfirm ? (
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[13px] text-[#999999]">确认清空全部？</span>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setShowClearConfirm(false)}
-                    className="px-3 py-1.5 text-[13px] text-[#666666] rounded-full border border-[#E0E0E0] active:scale-95 transition-transform"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={handleClearAll}
-                    className="px-3 py-1.5 text-[13px] text-white bg-[#EF4444] rounded-full active:scale-95 transition-transform"
-                  >
-                    清空
-                  </button>
-                </div>
+        {/* Footer — 清空历史 + 白天/黑夜模式 */}
+        <div className="flex-shrink-0 px-5 py-3 flex items-center justify-between">
+          {/* 左侧：清空历史 */}
+          {historyTopics.length > 0 ? (
+            showClearConfirm ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] text-[#999999]">确认清空？</span>
+                <button
+                  onClick={() => setShowClearConfirm(false)}
+                  className="px-2.5 py-1 text-[12px] text-[#666666] rounded-full border border-[#E0E0E0] active:scale-95 transition-transform"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleClearAll}
+                  className="px-2.5 py-1 text-[12px] text-white bg-[#EF4444] rounded-full active:scale-95 transition-transform"
+                >
+                  清空
+                </button>
               </div>
             ) : (
               <button
                 onClick={() => setShowClearConfirm(true)}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[13px] text-[#999999] hover:bg-[#F5F5F5] active:bg-[#EEEEEE] transition-colors"
+                className="flex items-center gap-1.5 py-1.5 rounded-lg text-[13px] text-[#999999] hover:text-[#666666] active:text-[#333333] transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" strokeWidth={2} />
                 清空历史
               </button>
+            )
+          ) : (
+            <div />
+          )}
+
+          {/* 右侧：白天/黑夜模式切换 */}
+          <button
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#F5F5F5] active:scale-95 transition-all"
+            title={isDarkMode ? '切换到白天模式' : '切换到黑夜模式'}
+          >
+            {isDarkMode ? (
+              <Sun className="w-[18px] h-[18px] text-[#999999]" strokeWidth={2} />
+            ) : (
+              <Moon className="w-[18px] h-[18px] text-[#999999]" strokeWidth={2} />
             )}
-          </div>
-        )}
+          </button>
+        </div>
+        {/* Safe area spacer for iPhone */}
+        <div className="flex-shrink-0" style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
       </div>
     </>
   );

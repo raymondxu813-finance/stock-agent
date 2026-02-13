@@ -81,8 +81,12 @@ export async function POST(request: NextRequest) {
       );
       const myPreviousContent = myPreviousSpeech?.content || '（上一轮未发言）';
 
-      if (userQuestion && userQuestion.trim()) {
-        // 有用户发言：回应用户 + 回应分歧
+      // 判断当前 agent 是否被用户 @ 了
+      // 没有 @ 任何人时，所有 agent 都回应用户；@ 了特定 agent 时，只有被 @ 的回应用户
+      const isMentioned = !userMentionedAgentIds || !Array.isArray(userMentionedAgentIds) || userMentionedAgentIds.length === 0 || userMentionedAgentIds.includes(agentId);
+
+      if (userQuestion && userQuestion.trim() && isMentioned) {
+        // 被 @ 的 agent：回应用户 + 回应分歧
         userPrompt = buildSubsequentRoundWithUserQuestionUserPrompt({
           topic: session.topicTitle,
           round_index: roundIndex,

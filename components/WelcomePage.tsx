@@ -404,7 +404,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
         >
           <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
         </button>
-        <h1 className="text-[16px] font-medium text-black">MultiAgent</h1>
+        <h1 className="text-[16px] font-medium text-black">LeapAgents</h1>
         <div className="w-10" />
       </div>
 
@@ -421,18 +421,18 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
           </div>
           {/* Brand Avatar — 100px */}
           <div className="relative z-10 drop-shadow-2xl">
-            <img src="/brand-avatar.png" alt="MultiAgent" width={100} height={100} className="rounded-full" />
+            <img src="/brand-avatar.png" alt="LeapAgents" width={100} height={100} className="rounded-full" />
           </div>
         </div>
 
         {/* Left-Aligned Text Content */}
-        <div className="px-5 text-left space-y-2">
+        <div className="px-5 text-center space-y-2">
           <p className="text-[14px] text-[#999999] leading-relaxed">
             一个视角，难免有盲区
           </p>
           <h2 className="text-[22px] text-black font-medium">多位专家交锋，越辩越明</h2>
           <p className="text-[14px] text-[#999999] leading-relaxed">
-            组建你的 AI 顾问团，开始讨论
+            组建你的 AI 专家团，开始讨论
           </p>
         </div>
       </div>
@@ -574,6 +574,8 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
             )}
           </button>
         </div>
+        {/* Safe area spacer for iPhone */}
+        <div style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
       </div>
     </div>
   );

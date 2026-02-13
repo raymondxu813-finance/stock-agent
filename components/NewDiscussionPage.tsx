@@ -222,6 +222,8 @@ export function NewDiscussionPage({ onBack, onCreateDiscussion }: NewDiscussionP
         >
           {isLoading ? '创建中...' : '开始讨论'}
         </button>
+        {/* Safe area spacer for iPhone */}
+        <div style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
       </div>
     </div>
   );
