@@ -18,6 +18,7 @@ import type { SessionSummary } from '../prompts/sessionSummaryPrompts';
 import { sessionSummarySystemPromptTemplate } from '../prompts/sessionSummaryPrompts';
 import type { AgentId } from '../prompts/roundAgentPrompts';
 import { llmClient } from './llmClient';
+import { logger } from './logger';
 
 /**
  * Session 类型定义
@@ -26,6 +27,8 @@ import { llmClient } from './llmClient';
 export interface Session {
   /** 会话 ID */
   id: string;
+  /** 所属用户 ID（用于归属权校验和按用户查询） */
+  userId?: string;
   /** 讨论话题标题 */
   topicTitle: string;
   /** 话题背景描述 */
@@ -41,15 +44,27 @@ export interface Session {
 }
 
 /**
- * 内存存储：Session ID 到 Session 的映射
- * 注意：在 Next.js 开发模式下，模块可能会重新加载，导致内存状态丢失
- * 生产环境建议使用数据库或 Redis 等持久化存储
+ * 会话存储：通过 SessionStore 抽象层管理
+ * 开发环境：MemorySessionStore（内存）
+ * 生产环境：RedisSessionStore（Redis，支持多实例共享）
+ *
+ * 为保持向后兼容，内部仍使用同步 Map 作为本地缓存，
+ * 但所有写操作同时同步到 SessionStore。
  */
+import { getSessionStore } from './storage';
+
 const sessions = new Map<string, Session>();
 
 // 导出 sessions Map 用于调试
 export function getAllSessions(): Map<string, Session> {
   return sessions;
+}
+
+/** 同步保存到 SessionStore（异步，不阻塞） */
+function persistSession(session: Session): void {
+  getSessionStore().set(session.id, session).catch((err) => {
+    logger.error({ err }, '[discussionService] Failed to persist session');
+  });
 }
 
 /**
@@ -433,6 +448,7 @@ export async function startSession(params: {
   topicDescription: string;
   userGoal: string;
   agentIds: AgentId[];
+  userId?: string;
 }): Promise<Session> {
   // 从 defaultStockAgents 中根据 agentIds 选出 AgentConfig
   const agents = defaultStockAgents.filter((agent) =>
@@ -446,6 +462,7 @@ export async function startSession(params: {
   // 创建 Session 对象
   const session: Session = {
     id: generateSessionId(),
+    userId: params.userId,
     topicTitle: params.topicTitle,
     topicDescription: params.topicDescription,
     userGoal: params.userGoal,
@@ -453,10 +470,11 @@ export async function startSession(params: {
     rounds: [],
   };
 
-  // 保存到 Map 中
+  // 保存到 Map 和 SessionStore
   sessions.set(session.id, session);
+  persistSession(session);
   
-  console.log(`[discussionService] Session created: ${session.id}, total sessions: ${sessions.size}`);
+  logger.info({ sessionId: session.id, userId: session.userId, totalSessions: sessions.size }, '[discussionService] Session created');
 
   return session;
 }
@@ -466,7 +484,8 @@ export async function startSession(params: {
  */
 export function restoreSession(session: Session): void {
   sessions.set(session.id, session);
-  console.log(`[discussionService] Session restored: ${session.id}, total sessions: ${sessions.size}`);
+  persistSession(session);
+  logger.info({ sessionId: session.id, totalSessions: sessions.size }, '[discussionService] Session restored');
 }
 
 /**
@@ -686,8 +705,9 @@ export async function runRoundWithProgress(
   // 步骤 f: 把 RoundSummary push 进 session.rounds
   session.rounds.push(roundSummary);
 
-  // 更新 Map 中的 Session
+  // 更新 Map 和 SessionStore
   sessions.set(sessionId, session);
+  persistSession(session);
 
   return session;
 }

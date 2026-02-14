@@ -1,0 +1,107 @@
+// ==============================================
+// 多 Agent 股票讨论系统 - 数据库 Schema
+// ==============================================
+//
+// 表结构：
+// - User：用户账号（替代 data/users.json 文件存储）
+// - DiscussionSession：讨论会话（替代内存 Map 存储）
+// - UsageLog：使用量统计（LLM 调用追踪）
+//
+// 使用方法：
+//   1. 配置 DATABASE_URL 环境变量
+//   2. npx prisma migrate dev --name init
+//   3. npx prisma generate
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// 用户表 - 替代 data/users.json
+// ============================================
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  displayName  String   @map("display_name")
+  email        String?
+  avatar       String?
+  role         String   @default("user") // "user" | "admin"
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // 关联
+  sessions  DiscussionSession[]
+  usageLogs UsageLog[]
+
+  @@map("users")
+}
+
+// ============================================
+// 讨论会话表 - 替代内存 Map<string, Session>
+// ============================================
+model DiscussionSession {
+  id               String   @id
+  userId           String?  @map("user_id")
+  topicTitle       String   @map("topic_title")
+  topicDescription String   @default("") @map("topic_description")
+  userGoal         String   @default("") @map("user_goal")
+  // Agent 配置列表，存储为 JSON
+  agentsJson       String   @map("agents_json") @db.Text
+  // 各轮次总结，存储为 JSON 数组
+  roundsJson       String   @default("[]") @map("rounds_json") @db.Text
+  // 主持人 prompts 记录，存储为 JSON
+  moderatorPromptsJson String? @map("moderator_prompts_json") @db.Text
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  // 关联
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  usageLogs UsageLog[]
+
+  @@index([userId])
+  @@map("discussion_sessions")
+}
+
+// ============================================
+// 使用量统计表 - LLM 调用追踪
+// ============================================
+model UsageLog {
+  id          String   @id @default(cuid())
+  userId      String?  @map("user_id")
+  sessionId   String?  @map("session_id")
+  // 调用类型：speech | review | summary | moderator
+  callType    String   @map("call_type")
+  // 使用的 API Key ID（脱敏）
+  keyId       String?  @map("key_id")
+  // 使用的模型
+  model       String?
+  // Token 消耗（预估）
+  promptTokens    Int?  @map("prompt_tokens")
+  completionTokens Int? @map("completion_tokens")
+  totalTokens     Int?  @map("total_tokens")
+  // 响应时间（毫秒）
+  durationMs  Int?     @map("duration_ms")
+  // 是否成功
+  success     Boolean  @default(true)
+  // 错误信息（失败时）
+  errorMessage String? @map("error_message")
+  // 请求追踪 ID
+  requestId   String?  @map("request_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // 关联
+  user    User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session DiscussionSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([createdAt])
+  @@index([callType])
+  @@map("usage_logs")
+}

@@ -6,8 +6,10 @@ import { executeAgentStream } from '@/lib/agentExecutor';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
 import { parseSentimentBlock } from '@/lib/utils';
 import { SENTIMENT_SUFFIX_INSTRUCTION } from '@/prompts/agents';
+import { agentSpeechSchema, validateRequest } from '@/lib/validation';
+import { createRequestLogger } from '@/lib/logger';
 
-const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工具：查询实时股价、获取最新资讯、分析K线数据。主动用数据说话。';
+const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工具：查询实时股价、获取最新资讯。主动用数据说话。';
 
 /**
  * 流式获取单个 Agent 的发言（Server-Sent Events）
@@ -20,19 +22,22 @@ const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工�
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { 
-      sessionId, agentId, roundIndex, sessionData, 
-      previousRoundComments,
-      userQuestion,         // 新增：用户提问内容（可选）
-      userMentionedAgentIds // 新增：用户@的Agent ID列表（可选）
-    } = body;
 
-    if (!sessionId || !agentId || !roundIndex) {
+    // Zod 结构化校验
+    const validation = validateRequest(agentSpeechSchema, body);
+    if (!validation.success) {
       return new Response(
-        JSON.stringify({ error: 'Missing required fields: sessionId, agentId, roundIndex' }),
+        JSON.stringify({ error: validation.error }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+
+    const { 
+      sessionId, agentId, roundIndex, sessionData, 
+      previousRoundComments,
+      userQuestion,
+      userMentionedAgentIds
+    } = validation.data;
 
     // 恢复或获取 session
     let session = getSession(sessionId);
@@ -46,6 +51,15 @@ export async function POST(request: NextRequest) {
       return new Response(
         JSON.stringify({ error: 'Session not found' }),
         { status: 404, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 归属权校验：只能操作自己的会话
+    const currentUserId = request.headers.get('x-user-id');
+    if (session.userId && currentUserId && session.userId !== currentUserId) {
+      return new Response(
+        JSON.stringify({ error: '无权访问该会话' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -68,7 +82,8 @@ export async function POST(request: NextRequest) {
 
     if (roundIndex > 1 && previousRoundComments && Array.isArray(previousRoundComments) && previousRoundComments.length > 0) {
       // ====== 第2轮及后续轮次 ======
-      console.log(`[API /api/agents/speech/stream] Round ${roundIndex}: agent=${agent.name}, hasUserQuestion=${!!userQuestion}`);
+      const reqLog = createRequestLogger(request.headers.get('x-request-id') || 'unknown', { agentId, roundIndex });
+      reqLog.info({ agentName: agent.name, hasUserQuestion: !!userQuestion }, '[speech/stream] Processing round');
       
       // 构建上一轮所有agent的发言内容
       const previousRoundSpeeches = previousRoundComments
@@ -103,7 +118,7 @@ export async function POST(request: NextRequest) {
 3. 200字以内，简洁有力
 4. 像跟同行聊天一样自然` + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
 
-        console.log(`[API /api/agents/speech/stream] Using SUBSEQUENT_WITH_USER prompt for ${agent.name}`);
+        reqLog.debug({ agentName: agent.name }, '[speech/stream] Using SUBSEQUENT_WITH_USER prompt');
       } else {
         // 无用户发言：仅回应分歧
         userPrompt = buildSubsequentRoundSpeechUserPrompt({
@@ -121,7 +136,7 @@ export async function POST(request: NextRequest) {
 3. 不要笼统总结话题，只聚焦具体分歧
 4. 200字以内，抓重点，说人话，像跟同行聊天一样自然` + SENTIMENT_SUFFIX_INSTRUCTION + TOOL_USAGE_INSTRUCTION;
 
-        console.log(`[API /api/agents/speech/stream] Using SUBSEQUENT_NO_USER prompt for ${agent.name}`);
+        reqLog.debug({ agentName: agent.name }, '[speech/stream] Using SUBSEQUENT_NO_USER prompt');
       }
     } else {
       // ====== 第1轮：针对话题阐述观点 ======
@@ -231,7 +246,8 @@ export async function POST(request: NextRequest) {
         } catch (error) {
           if (isCancelled) return;
           
-          console.error('[API /api/agents/speech/stream] Error:', error);
+          const errLog = createRequestLogger(request.headers.get('x-request-id') || 'unknown', { agentId });
+          errLog.error({ err: error }, '[speech/stream] Stream error');
           const errorMessage = error instanceof Error ? error.message : 'Failed to generate speech';
           try {
             safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`));
@@ -254,7 +270,8 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('[API /api/agents/speech/stream] Error:', error);
+    const errLog = createRequestLogger(request.headers.get('x-request-id') || 'unknown');
+    errLog.error({ err: error }, '[speech/stream] Request error');
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Failed to generate speech' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }

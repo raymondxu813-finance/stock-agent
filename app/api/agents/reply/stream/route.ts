@@ -6,7 +6,7 @@ import { executeAgentStream } from '@/lib/agentExecutor';
 import { parseSentimentBlock } from '@/lib/utils';
 import { SENTIMENT_SUFFIX_INSTRUCTION } from '@/prompts/agents';
 
-const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工具：查询实时股价、获取最新资讯、分析K线数据。主动用数据说话。';
+const TOOL_USAGE_INSTRUCTION = '\n\n你可以在需要数据支持时调用工具：查询实时股价、获取最新资讯。主动用数据说话。';
 
 /**
  * 流式获取单个 Agent 的针对性回复（Server-Sent Events）

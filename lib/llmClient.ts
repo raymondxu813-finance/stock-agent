@@ -1,9 +1,18 @@
 // /lib/llmClient.ts
 
+import { logger } from './logger';
+
 /**
  * LLM Client 抽象接口和实现
  * 用于统一调用大语言模型 API
+ * 
+ * 重构：Key 管理已迁移至 ApiKeyPoolManager (lib/apiKeyPool.ts)
+ * OpenAILLMClient 支持两种模式：
+ *   1. 注入单个 apiKey（如 moderatorLLMClient 传入专用 Key）
+ *   2. 无 apiKey 时使用全局 ApiKeyPoolManager（推荐方式）
  */
+
+import { getApiKeyPool } from './apiKeyPool';
 
 /**
  * LLM Client 接口
@@ -39,199 +48,167 @@ export interface LLMClient {
 
 /**
  * OpenAI LLM Client
- * 使用 OpenAI API 进行真实的文本生成（DeepSeek）
- * 支持多 API KEY 负载均衡以提升速度
+ * 使用 OpenAI 兼容 API 进行文本生成（DeepSeek/OpenAI）
+ * 
+ * Key 管理策略：
+ * - 如果构造时传入 apiKey，使用该固定 Key（如主持人专用 Key）
+ * - 否则使用全局 ApiKeyPoolManager 进行智能调度（推荐）
  */
 export class OpenAILLMClient implements LLMClient {
-  private apiKeys: string[];
+  private fixedApiKey?: string;
   private baseURL?: string;
   private model: string;
   private maxTokens: number;
   private temperature: number;
-  private currentKeyIndex: number = 0;
 
   constructor(config?: {
     apiKey?: string;
-    apiKeys?: string[];
     baseURL?: string;
     model?: string;
     maxTokens?: number;
     temperature?: number;
   }) {
-    // 支持单个 API Key 或多个 API Keys（用逗号分隔）
-    const envApiKey = process.env.OPENAI_API_KEY || '';
-    const envApiKeys = process.env.OPENAI_API_KEYS || '';
-    
-    // 优先使用配置的 apiKeys，然后是环境变量 OPENAI_API_KEYS，最后是 OPENAI_API_KEY
-    if (config?.apiKeys && config.apiKeys.length > 0) {
-      this.apiKeys = config.apiKeys.filter(key => key.trim().length > 0);
-    } else if (envApiKeys) {
-      // 支持逗号分隔的多个 API Keys
-      this.apiKeys = envApiKeys.split(',').map(key => key.trim()).filter(key => key.length > 0);
-    } else if (config?.apiKey) {
-      this.apiKeys = [config.apiKey];
-    } else if (envApiKey) {
-      this.apiKeys = [envApiKey];
-    } else {
-      this.apiKeys = [];
-    }
+    // 如果传入了固定 apiKey，使用它；否则后续调用通过 ApiKeyPoolManager 获取
+    this.fixedApiKey = config?.apiKey;
 
     this.baseURL = config?.baseURL || process.env.OPENAI_BASE_URL;
     this.model = config?.model || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    // 默认 maxTokens：Agent 发言用 1500，总结用 2000
     this.maxTokens = config?.maxTokens || parseInt(process.env.OPENAI_MAX_TOKENS || '2000');
     this.temperature = config?.temperature || parseFloat(process.env.OPENAI_TEMPERATURE || '0.7');
 
-    if (this.apiKeys.length === 0) {
-      console.warn('[OpenAILLMClient] Warning: No API keys configured. Please set OPENAI_API_KEY or OPENAI_API_KEYS in .env.local');
+    if (this.fixedApiKey) {
+      logger.info('[OpenAILLMClient] Initialized with fixed API key');
     } else {
-      console.log(`[OpenAILLMClient] Initialized with ${this.apiKeys.length} API key(s)`);
+      logger.info('[OpenAILLMClient] Initialized, will use ApiKeyPoolManager for key selection');
     }
-    
   }
 
   /**
-   * 获取下一个 API Key（轮询方式）
+   * 获取 API Key：优先使用固定 Key，否则从池中获取
    */
-  private getNextApiKey(): string {
-    if (this.apiKeys.length === 0) {
-      throw new Error('No API keys available');
+  private async getApiKey(): Promise<{ apiKey: string; keyId?: string }> {
+    if (this.fixedApiKey) {
+      return { apiKey: this.fixedApiKey };
     }
-    
-    const key = this.apiKeys[this.currentKeyIndex];
-    // 轮询到下一个 key
-    this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-    return key;
+    const pool = getApiKeyPool();
+    const { keyId, apiKey } = await pool.acquireKey();
+    return { apiKey, keyId };
   }
 
   /**
-   * 随机选择一个 API Key
+   * 释放 Key（仅池化 Key 需要释放）
    */
-  private getRandomApiKey(): string {
-    if (this.apiKeys.length === 0) {
-      throw new Error('No API keys available');
+  private releaseKey(keyId?: string): void {
+    if (keyId) {
+      getApiKeyPool().releaseKey(keyId);
     }
-    
-    const randomIndex = Math.floor(Math.random() * this.apiKeys.length);
-    return this.apiKeys[randomIndex];
   }
 
+  /**
+   * 上报成功（仅池化 Key）
+   */
+  private reportSuccess(keyId?: string): void {
+    if (keyId) {
+      getApiKeyPool().reportSuccess(keyId);
+    }
+  }
+
+  /**
+   * 上报失败（仅池化 Key）
+   */
+  private reportFailure(keyId?: string, error?: any): void {
+    if (keyId) {
+      getApiKeyPool().reportFailure(keyId, error);
+    }
+  }
 
   async generate(systemPrompt: string, userPrompt: string, agentId?: string): Promise<string> {
     // 判断是否需要 JSON 格式
     const needsJSON = this.shouldReturnJSON(systemPrompt, userPrompt);
-    
-    console.log(`[OpenAILLMClient] generate called: agentId=${agentId}, needsJSON=${needsJSON}`);
-    
-    // 使用 DeepSeek API（所有请求都使用 DeepSeek）
-    if (this.apiKeys.length === 0) {
-      throw new Error('OpenAI API Key is not configured. Please set OPENAI_API_KEY or OPENAI_API_KEYS in .env.local');
+
+    // 如果使用池化模式，利用 executeWithRetry 自动重试
+    if (!this.fixedApiKey) {
+      const pool = getApiKeyPool();
+      return pool.executeWithRetry(async (apiKey) => {
+        return this.doGenerate(apiKey, systemPrompt, userPrompt, needsJSON);
+      });
     }
 
+    // 固定 Key 模式：直接调用（无自动重试）
+    return this.doGenerate(this.fixedApiKey, systemPrompt, userPrompt, needsJSON);
+  }
+
+  private async doGenerate(
+    apiKey: string,
+    systemPrompt: string,
+    userPrompt: string,
+    needsJSON: boolean,
+  ): Promise<string> {
+    const { default: OpenAI } = await import('openai');
+    
+    const openai = new OpenAI({
+      apiKey,
+      baseURL: this.baseURL || 'https://api.openai.com/v1',
+    });
+
+    const effectiveMaxTokens = needsJSON 
+      ? Math.min(this.maxTokens, 4000)
+      : Math.min(this.maxTokens, 1500);
+
+    let finalSystemPrompt = systemPrompt;
+    let finalUserPrompt = userPrompt;
+    
+    if (needsJSON) {
+      const hasJsonKeyword = 
+        systemPrompt.toLowerCase().includes('json') ||
+        userPrompt.toLowerCase().includes('json');
+      if (!hasJsonKeyword) {
+        finalUserPrompt = `${userPrompt}\n\n请以 JSON 格式输出结果。`;
+      }
+    }
+
+    const apiStartTime = Date.now();
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    
     try {
-      // 动态导入 OpenAI SDK（仅在服务端使用）
-      const { default: OpenAI } = await import('openai');
+      const completion = await openai.chat.completions.create(
+        {
+          model: this.model,
+          messages: [
+            { role: 'system', content: finalSystemPrompt },
+            { role: 'user', content: finalUserPrompt },
+          ],
+          max_tokens: effectiveMaxTokens,
+          temperature: this.temperature,
+          response_format: needsJSON 
+            ? { type: 'json_object' as const }
+            : undefined,
+        },
+        { signal: controller.signal }
+      );
       
-      // 使用轮询方式选择 API Key（在多 KEY 场景下实现负载均衡）
-      const apiKey = this.getNextApiKey();
-      const keyIndex = this.apiKeys.indexOf(apiKey) + 1;
+      clearTimeout(timeoutId);
       
-      const openai = new OpenAI({
-        apiKey: apiKey,
-        baseURL: this.baseURL || 'https://api.openai.com/v1',
-      });
+      const apiDuration = Date.now() - apiStartTime;
+      logger.debug({ durationMs: apiDuration }, '[OpenAILLMClient] API call completed');
       
-      if (this.apiKeys.length > 1) {
-        console.log(`[OpenAILLMClient] Using DeepSeek API key ${keyIndex}/${this.apiKeys.length}`);
+      const content = completion.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('Empty response from API');
       }
 
-      // 根据请求类型调整 max_tokens
-      // 总结需要更多 tokens 以确保 JSON 完整输出
-      const effectiveMaxTokens = needsJSON 
-        ? Math.min(this.maxTokens, 4000) // 总结：增加到 4000 tokens 确保 JSON 完整
-        : Math.min(this.maxTokens, 1500); // Agent 发言：限制在 1500 tokens
-      
-      // 如果需要 JSON 格式，确保 prompt 中包含 "json" 关键词
-      // OpenAI API 要求使用 json_object 格式时，prompt 中必须包含 "json" 这个词
-      let finalSystemPrompt = systemPrompt;
-      let finalUserPrompt = userPrompt;
-      
-      if (needsJSON) {
-        // 检查是否已经包含 "json"（不区分大小写）
-        const systemPromptStr = systemPrompt || '';
-        const userPromptStr = userPrompt || '';
-        const hasJsonKeyword = 
-          systemPromptStr.toLowerCase().includes('json') ||
-          userPromptStr.toLowerCase().includes('json');
-        
-        if (!hasJsonKeyword) {
-          // 在 userPrompt 末尾添加明确的 JSON 要求
-          finalUserPrompt = `${userPromptStr}\n\n请以 JSON 格式输出结果。`;
-        }
-      }
-
-      const apiStartTime = Date.now();
-      console.log(`[OpenAILLMClient] Calling DeepSeek API: model=${this.model}, needsJSON=${needsJSON}, maxTokens=${effectiveMaxTokens}`);
-      
-      // 使用 AbortController 实现超时控制
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 秒超时
-      
-      try {
-        const completion = await openai.chat.completions.create(
-          {
-            model: this.model,
-            messages: [
-              {
-                role: 'system',
-                content: finalSystemPrompt,
-              },
-              {
-                role: 'user',
-                content: finalUserPrompt,
-              },
-            ],
-            max_tokens: effectiveMaxTokens,
-            temperature: this.temperature,
-            response_format: needsJSON 
-              ? { type: 'json_object' as const }
-              : undefined,
-          },
-          {
-            signal: controller.signal,
-          }
-        );
-        
-        clearTimeout(timeoutId);
-        
-        const apiDuration = Date.now() - apiStartTime;
-        console.log(`[OpenAILLMClient] DeepSeek API call completed in ${apiDuration}ms`);
-        
-        const content = completion.choices[0]?.message?.content;
-        if (!content) {
-          throw new Error('Empty response from DeepSeek API');
-        }
-
-        return content;
-      } catch (error) {
-        clearTimeout(timeoutId);
-        
-        if (error instanceof Error && error.name === 'AbortError') {
-          throw new Error('API call timeout after 60 seconds');
-        }
-        
-        console.error('[OpenAILLMClient] Error calling DeepSeek API:', error);
-        throw new Error(
-          `Failed to generate content: ${error instanceof Error ? error.message : 'Unknown error'}`
-        );
-      }
+      return content;
     } catch (error) {
-      // 外层 catch 处理导入或其他错误
-      console.error('[OpenAILLMClient] Error:', error);
+      clearTimeout(timeoutId);
+      
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('API call timeout after 60 seconds');
+      }
       throw error;
     }
   }
-
 
   /**
    * 流式生成文本内容
@@ -242,99 +219,81 @@ export class OpenAILLMClient implements LLMClient {
     agentId?: string,
     onChunk?: (chunk: string) => void
   ): Promise<string> {
-    // 判断是否需要 JSON 格式
     const needsJSON = this.shouldReturnJSON(systemPrompt, userPrompt);
-    
-    console.log(`[OpenAILLMClient] generateStream called: agentId=${agentId}, needsJSON=${needsJSON}`);
-    
-    // 使用 DeepSeek API（所有请求都使用 DeepSeek）
-    if (this.apiKeys.length === 0) {
-      throw new Error('OpenAI API Key is not configured. Please set OPENAI_API_KEY or OPENAI_API_KEYS in .env.local');
-    }
 
-    try {
-      // 动态导入 OpenAI SDK
-      const { default: OpenAI } = await import('openai');
-      
-      // 使用轮询方式选择 API Key
-      const apiKey = this.getNextApiKey();
-      const keyIndex = this.apiKeys.indexOf(apiKey) + 1;
-      
-      const openai = new OpenAI({
-        apiKey: apiKey,
-        baseURL: this.baseURL || 'https://api.openai.com/v1',
+    // 如果使用池化模式，利用 executeWithRetry 自动重试
+    if (!this.fixedApiKey) {
+      const pool = getApiKeyPool();
+      return pool.executeWithRetry(async (apiKey) => {
+        return this.doGenerateStream(apiKey, systemPrompt, userPrompt, needsJSON, onChunk);
       });
-      
-      if (this.apiKeys.length > 1) {
-        console.log(`[OpenAILLMClient] Using DeepSeek API key ${keyIndex}/${this.apiKeys.length} for streaming`);
-      }
-
-      // 根据请求类型调整 max_tokens
-      // JSON（总结）需要更多 tokens 确保完整输出（包含 consensus, conflicts 等字段）
-      const effectiveMaxTokens = needsJSON 
-        ? Math.min(this.maxTokens, 4000)
-        : Math.min(this.maxTokens, 1500);
-      
-      // 如果需要 JSON 格式，确保 prompt 中包含 "json" 关键词
-      let finalSystemPrompt = systemPrompt;
-      let finalUserPrompt = userPrompt;
-      
-      if (needsJSON) {
-        const hasJsonKeyword = 
-          systemPrompt.toLowerCase().includes('json') ||
-          userPrompt.toLowerCase().includes('json');
-        
-        if (!hasJsonKeyword) {
-          finalUserPrompt = `${userPrompt}\n\n请以 JSON 格式输出结果。`;
-        }
-      }
-
-      const apiStartTime = Date.now();
-      console.log(`[OpenAILLMClient] Calling DeepSeek API (streaming): model=${this.model}, needsJSON=${needsJSON}, maxTokens=${effectiveMaxTokens}`);
-      
-      let fullContent = '';
-      
-      const stream = await openai.chat.completions.create(
-        {
-          model: this.model,
-          messages: [
-            {
-              role: 'system',
-              content: finalSystemPrompt,
-            },
-            {
-              role: 'user',
-              content: finalUserPrompt,
-            },
-          ],
-          max_tokens: effectiveMaxTokens,
-          temperature: this.temperature,
-          stream: true,
-          response_format: needsJSON 
-            ? { type: 'json_object' as const }
-            : undefined,
-        }
-      );
-
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || '';
-        if (content) {
-          fullContent += content;
-          // 调用回调函数，实时推送内容
-          if (onChunk) {
-            onChunk(content);
-          }
-        }
-      }
-      
-      const apiDuration = Date.now() - apiStartTime;
-      console.log(`[OpenAILLMClient] DeepSeek API streaming completed in ${apiDuration}ms, total length: ${fullContent.length}`);
-      
-      return fullContent;
-    } catch (error) {
-      console.error('[OpenAILLMClient] Error in streaming:', error);
-      throw error;
     }
+
+    // 固定 Key 模式
+    return this.doGenerateStream(this.fixedApiKey, systemPrompt, userPrompt, needsJSON, onChunk);
+  }
+
+  private async doGenerateStream(
+    apiKey: string,
+    systemPrompt: string,
+    userPrompt: string,
+    needsJSON: boolean,
+    onChunk?: (chunk: string) => void,
+  ): Promise<string> {
+    const { default: OpenAI } = await import('openai');
+    
+    const openai = new OpenAI({
+      apiKey,
+      baseURL: this.baseURL || 'https://api.openai.com/v1',
+    });
+
+    const effectiveMaxTokens = needsJSON 
+      ? Math.min(this.maxTokens, 4000)
+      : Math.min(this.maxTokens, 1500);
+
+    let finalSystemPrompt = systemPrompt;
+    let finalUserPrompt = userPrompt;
+    
+    if (needsJSON) {
+      const hasJsonKeyword = 
+        systemPrompt.toLowerCase().includes('json') ||
+        userPrompt.toLowerCase().includes('json');
+      if (!hasJsonKeyword) {
+        finalUserPrompt = `${userPrompt}\n\n请以 JSON 格式输出结果。`;
+      }
+    }
+
+    const apiStartTime = Date.now();
+    let fullContent = '';
+    
+    const stream = await openai.chat.completions.create({
+      model: this.model,
+      messages: [
+        { role: 'system', content: finalSystemPrompt },
+        { role: 'user', content: finalUserPrompt },
+      ],
+      max_tokens: effectiveMaxTokens,
+      temperature: this.temperature,
+      stream: true,
+      response_format: needsJSON 
+        ? { type: 'json_object' as const }
+        : undefined,
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        fullContent += content;
+        if (onChunk) {
+          onChunk(content);
+        }
+      }
+    }
+    
+    const apiDuration = Date.now() - apiStartTime;
+    logger.debug({ durationMs: apiDuration, contentLength: fullContent.length }, '[OpenAILLMClient] Streaming completed');
+    
+    return fullContent;
   }
 
 
@@ -531,18 +490,19 @@ function createLLMClient(): LLMClient {
       ? apiKeys.split(',').filter(k => k.trim().length > 0).length 
       : (apiKey ? 1 : 0);
     
-    console.log('[llmClient] Using DeepSeek/OpenAI API');
-    console.log('[llmClient] API Keys:', keyCount);
-    console.log('[llmClient] Model:', process.env.OPENAI_MODEL || 'deepseek-chat');
-    console.log('[llmClient] Base URL:', process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
+    logger.info({
+      keyCount,
+      model: process.env.OPENAI_MODEL || 'deepseek-chat',
+      baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+    }, '[llmClient] Using DeepSeek/OpenAI API');
     
     if (keyCount > 1) {
-      console.log('[llmClient] Multi-key load balancing enabled - requests will be distributed across keys');
+      logger.info('[llmClient] Multi-key load balancing enabled');
     }
     
     return new OpenAILLMClient();
   } else {
-    console.log('[llmClient] Using Mock LLM Client (set OPENAI_API_KEY or OPENAI_API_KEYS in .env.local to use real API)');
+    logger.info('[llmClient] Using Mock LLM Client (set OPENAI_API_KEY or OPENAI_API_KEYS in .env.local)');
     return new MockLLMClient();
   }
 }

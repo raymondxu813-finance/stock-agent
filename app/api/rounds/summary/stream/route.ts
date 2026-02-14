@@ -5,6 +5,8 @@ import { buildRoundSummaryUserPrompt } from '@/prompts/builder';
 import { roundSummarySystemPromptTemplate } from '@/prompts/roundSummaryPrompts';
 import { llmClient } from '@/lib/llmClient';
 import { getCurrentStreamingSection, convertModeratorTextToAnalysis, type ModeratorSection } from '@/lib/utils';
+import { roundSummarySchema, validateRequest } from '@/lib/validation';
+import { createRequestLogger } from '@/lib/logger';
 
 /**
  * 流式生成本轮讨论的总结（Server-Sent Events）
@@ -17,14 +19,17 @@ import { getCurrentStreamingSection, convertModeratorTextToAnalysis, type Modera
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData, userQuestion } = body;
 
-    if (!sessionId || !roundIndex) {
+    // Zod 结构化校验
+    const validation = validateRequest(roundSummarySchema, body);
+    if (!validation.success) {
       return new Response(
-        JSON.stringify({ error: 'Missing required fields: sessionId, roundIndex' }),
+        JSON.stringify({ error: validation.error }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+
+    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData, userQuestion } = validation.data;
 
     // 恢复或获取 session
     let session = getSession(sessionId);
@@ -37,6 +42,15 @@ export async function POST(request: NextRequest) {
       return new Response(
         JSON.stringify({ error: 'Session not found' }),
         { status: 404, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 归属权校验：只能操作自己的会话
+    const currentUserId = request.headers.get('x-user-id');
+    if (session.userId && currentUserId && session.userId !== currentUserId) {
+      return new Response(
+        JSON.stringify({ error: '无权访问该会话' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -181,10 +195,11 @@ export async function POST(request: NextRequest) {
           if (isCancelled) return;
           
           // 解析结构化文本为 ModeratorAnalysis
-          console.log('[API /api/rounds/summary/stream] Summary text received, length:', fullContent.length);
+          const reqLog = createRequestLogger(request.headers.get('x-request-id') || 'unknown', { sessionId, roundIndex });
+          reqLog.info({ contentLength: fullContent.length }, '[summary/stream] Summary text received');
           const totalAgents = session.agents.length;
           const roundSummary = convertModeratorTextToAnalysis(fullContent, roundIndex, totalAgents);
-          console.log('[API /api/rounds/summary/stream] Summary parsed, consensusLevel:', roundSummary.consensusLevel);
+          reqLog.info({ consensusLevel: roundSummary.consensusLevel }, '[summary/stream] Summary parsed');
           
           // 保存总结到 session（转换为兼容格式，包含 v2 新字段）
           // agentsSummary: 从 topicComparisons 构建每个 agent 的观点摘要（如有），否则 fallback 到 newPoints
@@ -274,7 +289,8 @@ export async function POST(request: NextRequest) {
         } catch (error) {
           if (isCancelled) return;
           
-          console.error('[API /api/rounds/summary/stream] Error:', error);
+          const errLog = createRequestLogger(request.headers.get('x-request-id') || 'unknown', { sessionId, roundIndex });
+          errLog.error({ err: error }, '[summary/stream] Stream error');
           const errorMessage = error instanceof Error ? error.message : 'Failed to generate summary';
           try {
             safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: errorMessage })}\n\n`));
@@ -297,7 +313,8 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('[API /api/rounds/summary/stream] Error:', error);
+    const errLog = createRequestLogger(request.headers.get('x-request-id') || 'unknown');
+    errLog.error({ err: error }, '[summary/stream] Request error');
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Failed to generate summary' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }

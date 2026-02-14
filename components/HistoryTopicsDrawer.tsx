@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, Trash2, Sun, Moon } from 'lucide-react';
 import type { Discussion } from '@/types';
+import { useTheme } from '@/lib/ThemeContext';
 
 // 历史话题类型（保存完整的Discussion对象）
 interface HistoryTopic {
@@ -13,8 +14,20 @@ interface HistoryTopic {
   discussion: Discussion;
 }
 
-// localStorage key
-const HISTORY_TOPICS_KEY = 'multiagent_history_topics';
+// localStorage key（按用户 ID 隔离）
+const HISTORY_TOPICS_KEY_PREFIX = 'multiagent_history_topics';
+
+/** 获取当前用户的历史记录 localStorage key */
+function getHistoryKey(): string {
+  try {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const user = JSON.parse(userStr);
+      if (user?.id) return `${HISTORY_TOPICS_KEY_PREFIX}_${user.id}`;
+    }
+  } catch { /* ignore */ }
+  return HISTORY_TOPICS_KEY_PREFIX; // 未登录时使用默认 key
+}
 
 type HistoryTopicsDrawerProps = {
   isOpen: boolean;
@@ -168,9 +181,9 @@ function SwipeableItem({ topic, onSelect, onDelete, disabled }: {
         onClick={handleClick}
       >
         <div
-          className={`w-full text-left px-3 py-2.5 rounded-lg bg-white hover:bg-[#F5F5F5] active:bg-[#EEEEEE] transition-colors cursor-pointer select-none ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
+          className={`w-full text-left px-3 py-2.5 rounded-lg bg-surface-card hover:bg-surface-hover active:bg-surface-bubble transition-colors cursor-pointer select-none ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
         >
-          <p className="text-[14px] text-[#333333] line-clamp-2 leading-relaxed">
+          <p className="text-[14px] text-content-primary line-clamp-2 leading-relaxed">
             {topic.title}
           </p>
         </div>
@@ -182,13 +195,13 @@ function SwipeableItem({ topic, onSelect, onDelete, disabled }: {
 export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading = false }: HistoryTopicsDrawerProps) {
   const [historyTopics, setHistoryTopics] = useState<HistoryTopic[]>([]);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const { isDark: isDarkMode, toggleTheme } = useTheme();
 
   // 从localStorage加载历史话题
   useEffect(() => {
     const loadHistoryTopics = () => {
       try {
-        const stored = localStorage.getItem(HISTORY_TOPICS_KEY);
+        const stored = localStorage.getItem(getHistoryKey());
         if (stored) {
           const topics = JSON.parse(stored) as any[];
           const validTopics = topics
@@ -225,7 +238,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
     const updated = historyTopics.filter(t => t.id !== topicId);
     setHistoryTopics(updated);
     try {
-      localStorage.setItem(HISTORY_TOPICS_KEY, JSON.stringify(updated));
+      localStorage.setItem(getHistoryKey(), JSON.stringify(updated));
     } catch (e) {
       console.error('[HistoryTopicsDrawer] Error saving after delete:', e);
     }
@@ -236,7 +249,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
     setHistoryTopics([]);
     setShowClearConfirm(false);
     try {
-      localStorage.removeItem(HISTORY_TOPICS_KEY);
+      localStorage.removeItem(getHistoryKey());
     } catch (e) {
       console.error('[HistoryTopicsDrawer] Error clearing history:', e);
     }
@@ -273,18 +286,18 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
 
       {/* Drawer */}
       <div
-        className={`absolute left-0 top-0 bottom-0 w-[280px] bg-white z-[70] transition-transform duration-300 ease-out flex flex-col ${
+        className={`absolute left-0 top-0 bottom-0 w-[280px] bg-surface-card z-[70] transition-transform duration-300 ease-out flex flex-col ${
           isOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full shadow-none'
         }`}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 flex-shrink-0">
-          <h2 className="text-[19px] font-bold text-black">历史讨论</h2>
+          <h2 className="text-[19px] font-bold text-content-primary">历史讨论</h2>
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#F5F5F5] active:scale-95 transition-all"
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-hover active:scale-95 transition-all"
           >
-            <X className="w-5 h-5 text-[#666666]" strokeWidth={2} />
+            <X className="w-5 h-5 text-content-secondary" strokeWidth={2} />
           </button>
         </div>
 
@@ -292,14 +305,14 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
         <div className="flex-1 overflow-y-auto">
           {historyTopics.length === 0 ? (
             <div className="px-5 py-12 text-center">
-              <p className="text-[14px] text-[#999999]">暂无历史讨论</p>
+              <p className="text-[14px] text-content-muted">暂无历史讨论</p>
             </div>
           ) : (
             <>
               {/* Today Section */}
               {todayTopics.length > 0 && (
                 <div className="px-5 pt-5 pb-3">
-                  <h3 className="text-[12px] font-bold text-[#999999] mb-2">今天</h3>
+                  <h3 className="text-[12px] font-bold text-content-muted mb-2">今天</h3>
                   {renderTopicList(todayTopics)}
                 </div>
               )}
@@ -307,7 +320,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
               {/* Last 7 Days Section */}
               {weekTopics.length > 0 && (
                 <div className="px-5 pb-3">
-                  <h3 className="text-[12px] font-bold text-[#999999] mb-2">7天内</h3>
+                  <h3 className="text-[12px] font-bold text-content-muted mb-2">7天内</h3>
                   {renderTopicList(weekTopics)}
                 </div>
               )}
@@ -315,7 +328,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
               {/* Earlier Section */}
               {earlierTopics.length > 0 && (
                 <div className="px-5 pb-3">
-                  <h3 className="text-[12px] font-bold text-[#999999] mb-2">更早</h3>
+                  <h3 className="text-[12px] font-bold text-content-muted mb-2">更早</h3>
                   {renderTopicList(earlierTopics)}
                 </div>
               )}
@@ -329,10 +342,10 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
           {historyTopics.length > 0 ? (
             showClearConfirm ? (
               <div className="flex items-center gap-2">
-                <span className="text-[13px] text-[#999999]">确认清空？</span>
+                <span className="text-[13px] text-content-muted">确认清空？</span>
                 <button
                   onClick={() => setShowClearConfirm(false)}
-                  className="px-2.5 py-1 text-[12px] text-[#666666] rounded-full border border-[#E0E0E0] active:scale-95 transition-transform"
+                  className="px-2.5 py-1 text-[12px] text-content-secondary rounded-full border border-line-dashed active:scale-95 transition-transform"
                 >
                   取消
                 </button>
@@ -346,7 +359,7 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
             ) : (
               <button
                 onClick={() => setShowClearConfirm(true)}
-                className="flex items-center gap-1.5 py-1.5 rounded-lg text-[13px] text-[#999999] hover:text-[#666666] active:text-[#333333] transition-colors"
+                className="flex items-center gap-1.5 py-1.5 rounded-lg text-[13px] text-content-muted hover:text-content-secondary active:text-content-primary transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" strokeWidth={2} />
                 清空历史
@@ -358,14 +371,14 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
 
           {/* 右侧：白天/黑夜模式切换 */}
           <button
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-[#F5F5F5] active:scale-95 transition-all"
+            onClick={toggleTheme}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-hover active:scale-95 transition-all"
             title={isDarkMode ? '切换到白天模式' : '切换到黑夜模式'}
           >
             {isDarkMode ? (
-              <Sun className="w-[18px] h-[18px] text-[#999999]" strokeWidth={2} />
+              <Sun className="w-[18px] h-[18px] text-content-muted" strokeWidth={2} />
             ) : (
-              <Moon className="w-[18px] h-[18px] text-[#999999]" strokeWidth={2} />
+              <Moon className="w-[18px] h-[18px] text-content-muted" strokeWidth={2} />
             )}
           </button>
         </div>

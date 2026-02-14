@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
+import { ThemeProvider, themeInitScript } from '@/lib/ThemeContext'
 
 export const metadata: Metadata = {
   title: 'LeapAgents Stock Discussion',
@@ -20,8 +21,14 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="zh-CN">
-      <body className="antialiased bg-[#F5F5F5]">{children}</body>
+    <html lang="zh-CN" suppressHydrationWarning>
+      <head>
+        {/* 防闪烁：在 React 水合前设置 .dark 类 */}
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body className="antialiased bg-surface-page">
+        <ThemeProvider>{children}</ThemeProvider>
+      </body>
     </html>
   )
 }

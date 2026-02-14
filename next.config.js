@@ -1,11 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // 增加 API 路由的超时时间（默认是 10 秒，对于多 Agent 讨论可能需要更长时间）
-  // 注意：这个配置在 Vercel 等平台上可能无效，需要在平台配置中设置
+  // Docker 部署使用 standalone 输出模式，减小镜像体积
+  output: 'standalone',
   experimental: {
-    // 增加服务器端超时时间（单位：秒）
-    serverComponentsExternalPackages: ['openai'],
+    serverComponentsExternalPackages: ['openai', '@prisma/client', '@prisma/adapter-pg', 'pg', 'pino', 'pino-pretty'],
   },
 }
 

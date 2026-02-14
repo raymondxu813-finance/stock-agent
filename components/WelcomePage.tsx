@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Menu, SendHorizontal } from 'lucide-react';
+import { Menu, SendHorizontal, LogOut } from 'lucide-react';
 import type { Discussion, AvatarType } from '@/types';
 import { AgentAvatar } from './AgentAvatar';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
@@ -18,13 +18,26 @@ interface HistoryTopic {
   discussion: Discussion;
 }
 
-// localStorage key（与 HistoryTopicsDrawer 和 DiscussionPage 保持一致）
-const HISTORY_TOPICS_KEY = 'multiagent_history_topics';
+// localStorage key（按用户 ID 隔离，与 HistoryTopicsDrawer 和 DiscussionPage 保持一致）
+const HISTORY_TOPICS_KEY_PREFIX = 'multiagent_history_topics';
+
+/** 获取当前用户的历史记录 localStorage key */
+function getHistoryKey(): string {
+  try {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const user = JSON.parse(userStr);
+      if (user?.id) return `${HISTORY_TOPICS_KEY_PREFIX}_${user.id}`;
+    }
+  } catch { /* ignore */ }
+  return HISTORY_TOPICS_KEY_PREFIX;
+}
 // 持久化已选 agent 的 localStorage key
 const SELECTED_AGENTS_KEY = 'multiagent_selected_agents';
 
 type WelcomePageProps = {
   onCreateDiscussion: (discussion: Discussion) => void;
+  onLogout?: () => void;
 };
 
 // 全部可用 agent（含头像映射）
@@ -162,7 +175,7 @@ const POPULAR_TOPICS = [
   '当前市场环境下如何配置资产？',
 ];
 
-export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
+export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) {
   const [topic, setTopic] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -257,7 +270,8 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
   // 保存历史话题到localStorage
   const saveHistoryTopic = (discussion: Discussion) => {
     try {
-      const stored = localStorage.getItem(HISTORY_TOPICS_KEY);
+      const key = getHistoryKey();
+      const stored = localStorage.getItem(key);
       const topics: HistoryTopic[] = stored ? JSON.parse(stored) : [];
 
       const now = Date.now();
@@ -282,7 +296,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
 
       const limitedTopics = topics.slice(0, 50);
       const sortedTopics = limitedTopics.sort((a, b) => b.updatedAt - a.updatedAt);
-      localStorage.setItem(HISTORY_TOPICS_KEY, JSON.stringify(sortedTopics));
+      localStorage.setItem(key, JSON.stringify(sortedTopics));
     } catch (error) {
       console.error('[WelcomePage] Error saving history topic:', error);
     }
@@ -368,7 +382,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
   };
 
   return (
-    <div className="h-full bg-white flex flex-col relative">
+    <div className="h-full bg-surface-card flex flex-col relative">
       {/* Ambient Particles */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-24 left-10 w-1 h-1 bg-[#AAE874] rounded-full opacity-40 animate-pulse" />
@@ -402,10 +416,20 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
           onClick={() => setIsDrawerOpen(true)}
           className="w-10 h-10 rounded-full flex items-center justify-center active:scale-95 transition-transform"
         >
-          <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+          <Menu className="w-5 h-5 text-content-primary" strokeWidth={1.5} />
         </button>
-        <h1 className="text-[16px] font-medium text-black">LeapAgents</h1>
-        <div className="w-10" />
+        <h1 className="text-[16px] font-medium text-content-primary">LeapAgents</h1>
+        {onLogout ? (
+          <button
+            onClick={onLogout}
+            className="w-10 h-10 rounded-full flex items-center justify-center active:scale-95 transition-transform"
+            title="退出登录"
+          >
+            <LogOut className="w-4 h-4 text-content-muted" strokeWidth={1.5} />
+          </button>
+        ) : (
+          <div className="w-10" />
+        )}
       </div>
 
       {/* Brand Header — Figma BrandHeader 风格 */}
@@ -427,11 +451,11 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
 
         {/* Left-Aligned Text Content */}
         <div className="px-5 text-center space-y-2">
-          <p className="text-[14px] text-[#999999] leading-relaxed">
+          <p className="text-[14px] text-content-muted leading-relaxed">
             一个视角，难免有盲区
           </p>
-          <h2 className="text-[22px] text-black font-medium">多位专家交锋，越辩越明</h2>
-          <p className="text-[14px] text-[#999999] leading-relaxed">
+          <h2 className="text-[22px] text-content-primary font-medium">多位专家交锋，越辩越明</h2>
+          <p className="text-[14px] text-content-muted leading-relaxed">
             组建你的 AI 专家团，开始讨论
           </p>
         </div>
@@ -476,14 +500,14 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
               key={index}
               onClick={() => handleTopicClick(topicText)}
               disabled={isLoading || selectedAgents.length < MIN_SLOTS}
-              className="flex-shrink-0 w-[calc(100%-40px)] snap-start bg-white rounded-full px-4 py-2.5 border border-[#E8E8E8] shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:border-[#AAE874] hover:shadow-[0_4px_12px_rgba(170,232,116,0.2)] active:scale-[0.98] transition-all duration-200 text-left group disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-shrink-0 w-[calc(100%-40px)] snap-start bg-surface-card rounded-full px-4 py-2.5 border border-line shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:border-[#AAE874] hover:shadow-[0_4px_12px_rgba(170,232,116,0.2)] active:scale-[0.98] transition-all duration-200 text-left group disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <div className="flex items-center gap-2.5">
                 <div className="flex-shrink-0 w-6 h-6 rounded-full bg-[#AAE874]/10 flex items-center justify-center group-hover:bg-[#AAE874]/20 transition-colors">
                   <span className="text-[14px]">💡</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] text-[#333333] font-medium truncate">
+                  <p className="text-[13px] text-content-primary font-medium truncate">
                     {topicText}
                   </p>
                 </div>
@@ -499,7 +523,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
               className={`rounded-full transition-all duration-200 ${
                 index === activeTopicIndex
                   ? 'w-4 h-1.5 bg-[#AAE874]'
-                  : 'w-1.5 h-1.5 bg-[#E0E0E0]'
+                  : 'w-1.5 h-1.5 bg-line-dashed'
               }`}
             />
           ))}
@@ -512,7 +536,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
       {/* Bottom Action Bar — 与讨论页底部栏对齐 */}
       <div className="absolute bottom-0 left-0 right-0 z-50">
         {/* Glassmorphic Background with Gradient */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
+        <div className="absolute inset-0 backdrop-blur-xl" style={{ background: `linear-gradient(to top, rgba(170,232,116,0.10), var(--color-glass-strong), var(--color-glass-medium))` }} />
 
         {/* Input Bar Container */}
         <div className={`relative flex gap-3 px-5 py-4 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
@@ -530,7 +554,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
               }}
               placeholder="输入话题，开始讨论..."
               rows={1}
-              className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="block w-full px-5 bg-surface-input border border-line text-[14px] text-content-primary placeholder:text-content-placeholder resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 height: '40px',
                 maxHeight: '98px',
@@ -563,7 +587,7 @@ export function WelcomePage({ onCreateDiscussion }: WelcomePageProps) {
               flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all
               ${topic.trim() && !isLoading && selectedAgents.length >= MIN_SLOTS
                 ? 'bg-[#AAE874] active:scale-95 shadow-[0_4px_16px_rgba(170,232,116,0.4)] hover:shadow-[0_6px_20px_rgba(170,232,116,0.5)]'
-                : 'bg-[#E8E8E8] cursor-not-allowed opacity-50'
+                : 'bg-line cursor-not-allowed opacity-50'
               }
             `}
           >

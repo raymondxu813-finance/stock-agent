@@ -31,15 +31,15 @@ export function AgentSlot({ agent, onClick }: AgentSlotProps) {
             <AgentAvatar type={agent.avatar} size={80} />
           </div>
         ) : (
-          <div className="absolute inset-0 rounded-full border-2 border-dashed border-[#E0E0E0] flex items-center justify-center bg-[#FAFAFA]">
-            <Plus className="w-6 h-6 text-[#CCCCCC]" strokeWidth={2} />
+          <div className="absolute inset-0 rounded-full border-2 border-dashed border-line-dashed flex items-center justify-center bg-surface-empty">
+            <Plus className="w-6 h-6 text-content-icon" strokeWidth={2} />
           </div>
         )}
       </div>
 
       {/* Agent Name */}
       {agent && (
-        <span className="text-[12px] text-[#333333] font-medium text-center max-w-[90px] truncate">
+        <span className="text-[12px] text-content-primary font-medium text-center max-w-[90px] truncate">
           {agent.name}
         </span>
       )}

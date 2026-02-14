@@ -1,0 +1,26 @@
+[
+  {
+    "id": "user_1771065022620_m8ket",
+    "username": "admin",
+    "displayName": "管理员",
+    "role": "admin",
+    "passwordHash": "$2b$10$477Dvm32DY16V57IIo3pDebZyNXnojNTlxzjUQ11oD8SJYDrsHySy",
+    "createdAt": "2026-02-14T10:30:22.682Z"
+  },
+  {
+    "id": "user_1771065022685_0m20q",
+    "username": "demo",
+    "displayName": "演示用户",
+    "role": "user",
+    "passwordHash": "$2b$10$WIdrMfIotwFI9ke4hKtVL.izU/F6XFPWFdD5HI.dHKI0X2ZglgQ4S",
+    "createdAt": "2026-02-14T10:30:22.741Z"
+  },
+  {
+    "id": "user_1771066041456_086rx",
+    "username": "raymond",
+    "displayName": "RaymondC",
+    "role": "user",
+    "passwordHash": "$2b$10$YZinIHEMCm3VT1wjfMJoeOA/jCEdKdd1O/xLqVmIMlsPROkdNctWK",
+    "createdAt": "2026-02-14T10:47:21.519Z"
+  }
+]

@@ -11,32 +11,10 @@
  */
 
 /**
- * API Key 轮询管理（复用 llmClient 的多 key 负载均衡逻辑）
+ * API Key 管理：使用统一的 ApiKeyPoolManager
  */
-let currentKeyIndex = 0;
-
-function getApiKeys(): string[] {
-  const envApiKeys = process.env.OPENAI_API_KEYS || '';
-  const envApiKey = process.env.OPENAI_API_KEY || '';
-
-  if (envApiKeys) {
-    return envApiKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
-  }
-  if (envApiKey) {
-    return [envApiKey];
-  }
-  return [];
-}
-
-function getNextApiKey(): string {
-  const keys = getApiKeys();
-  if (keys.length === 0) {
-    throw new Error('[agentExecutor] No API keys configured. Set OPENAI_API_KEY or OPENAI_API_KEYS in .env.local');
-  }
-  const key = keys[currentKeyIndex % keys.length];
-  currentKeyIndex = (currentKeyIndex + 1) % keys.length;
-  return key;
-}
+import { getApiKeyPool } from './apiKeyPool';
+import { logger } from './logger';
 
 // ============================================
 // OpenAI Function Calling 工具定义
@@ -86,33 +64,6 @@ const openaiTools: Array<{
           },
         },
         required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'getKlineData',
-      description: '获取股票的K线数据和技术指标分析，包括均线(MA)、MACD、RSI、KDJ等常用技术指标',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: {
-            type: 'string',
-            description: '股票代码或名称，如 "比亚迪"、"600519"',
-          },
-          period: {
-            type: 'string',
-            enum: ['daily', 'weekly', 'monthly'],
-            description: 'K线周期：日线/周线/月线',
-          },
-          indicators: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '需要的技术指标，如 ["MA5","MA20","MACD","RSI","KDJ"]',
-          },
-        },
-        required: ['symbol'],
       },
     },
   },
@@ -166,13 +117,6 @@ function parseDsmlToolCalls(text: string): { cleanText: string; toolCalls: Array
  */
 function mapDsmlToolName(name: string): string {
   const nameMap: Record<string, string> = {
-    'analyzeKLineData': 'getKlineData',
-    'analyzeKline': 'getKlineData',
-    'getKLine': 'getKlineData',
-    'getKLineData': 'getKlineData',
-    'klineData': 'getKlineData',
-    'get_kline_data': 'getKlineData',
-    'analyze_kline_data': 'getKlineData',
     'queryStockPrice': 'getStockPrice',
     'get_stock_price': 'getStockPrice',
     'stockPrice': 'getStockPrice',
@@ -201,12 +145,6 @@ function mapDsmlToolArgs(toolName: string, args: Record<string, any>): Record<st
         if (alt) { mapped.symbol = alt; delete mapped.name; delete mapped.stock_name; delete mapped.stock; delete mapped.stock_code; }
       }
       break;
-    case 'getKlineData':
-      if (!mapped.symbol) {
-        const alt = mapped.name || mapped.stock || mapped.stock_name;
-        if (alt) { mapped.symbol = alt; delete mapped.name; delete mapped.stock; delete mapped.stock_name; }
-      }
-      break;
   }
 
   return mapped;
@@ -224,10 +162,6 @@ async function executeTool(name: string, args: Record<string, any>): Promise<any
     case 'getLatestNews': {
       const { getLatestNews } = await import('./tools/news');
       return (getLatestNews as any).execute({ limit: 3, ...args });
-    }
-    case 'getKlineData': {
-      const { getKlineData } = await import('./tools/kline');
-      return (getKlineData as any).execute({ period: 'daily', ...args });
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
@@ -283,13 +217,47 @@ export async function executeAgentStream(
 
   const { default: OpenAI } = await import('openai');
   
-  const apiKey = getNextApiKey();
+  const pool = getApiKeyPool();
+  const { keyId, apiKey } = await pool.acquireKey();
   const baseURL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
   const modelName = process.env.OPENAI_MODEL || 'deepseek-chat';
 
   const openai = new OpenAI({ apiKey, baseURL });
 
-  console.log(`[agentExecutor] Starting: model=${modelName}, agent=${agentName}, maxSteps=${maxSteps}`);
+  logger.info({ model: modelName, agent: agentName, maxSteps }, '[agentExecutor] Starting execution');
+
+  // 封装执行逻辑，确保 Key 始终被释放
+  try {
+    return await doExecuteAgentStream(
+      params, agentId, agentName, encoder, safeEnqueue,
+      openai, modelName, pool, keyId,
+    );
+  } catch (error) {
+    pool.reportFailure(keyId, error);
+    throw error;
+  } finally {
+    pool.releaseKey(keyId);
+  }
+}
+
+/** 内部执行逻辑（Key 生命周期由外层管理） */
+async function doExecuteAgentStream(
+  params: ExecuteAgentParams,
+  agentId: string,
+  agentName: string,
+  encoder: TextEncoder,
+  safeEnqueue: (data: Uint8Array) => boolean,
+  openai: any,
+  modelName: string,
+  pool: ReturnType<typeof getApiKeyPool>,
+  keyId: string,
+): Promise<{ text: string; toolCalls: ToolCallRecord[] }> {
+  const {
+    systemPrompt,
+    userPrompt,
+    maxSteps = 5,
+    temperature = 0.7,
+  } = params;
 
   const messages: Array<any> = [
     { role: 'system', content: systemPrompt },
@@ -433,7 +401,7 @@ export async function executeAgentStream(
     if (pendingToolCalls.size === 0) {
       const dsmlParsed = parseDsmlToolCalls(stepContent);
       if (dsmlParsed && dsmlParsed.toolCalls.length > 0) {
-        console.log(`[agentExecutor] Agent ${agentName}: detected DSML text-based function calls: ${dsmlParsed.toolCalls.map(t => t.name).join(', ')}`);
+        logger.debug({ agent: agentName, tools: dsmlParsed.toolCalls.map(t => t.name) }, '[agentExecutor] Detected DSML function calls');
         // Strip DSML from fullText
         const dsmlStartInFull = fullText.search(/<[^>]*function_calls[^>]*>/i);
         if (dsmlStartInFull >= 0) {
@@ -532,7 +500,7 @@ export async function executeAgentStream(
 
     // 如果已无剩余步骤，强制追加一轮无工具调用来生成最终回复
     if (stepsRemaining === 0) {
-      console.log(`[agentExecutor] Agent ${agentName}: maxSteps reached after tools, forcing final text generation...`);
+      logger.info({ agent: agentName }, '[agentExecutor] maxSteps reached, forcing final text generation');
       try {
         const finalStream = await openai.chat.completions.create({
           model: modelName,
@@ -554,20 +522,21 @@ export async function executeAgentStream(
           }
         }
       } catch (err) {
-        console.error(`[agentExecutor] Agent ${agentName}: final generation error:`, err);
+        logger.error({ err, agent: agentName }, '[agentExecutor] Final generation error');
       }
     }
 
-    console.log(`[agentExecutor] Agent ${agentName}: ${assistantToolCalls.length} tool(s) executed, continuing...`);
+    logger.debug({ agent: agentName, toolCount: assistantToolCalls.length }, '[agentExecutor] Tools executed, continuing');
   }
 
   // 最终防线：无条件清理 fullText 中可能残留的 DSML 标记
   const dsmlFinalClean = fullText.search(/<[|｜\s]*(?:DSML[|｜\s]*)?(?:function_calls|tool_call|invoke)/i);
   if (dsmlFinalClean >= 0) {
-    console.log(`[agentExecutor] Agent ${agentName}: stripping residual DSML from fullText at pos ${dsmlFinalClean}`);
+    logger.debug({ agent: agentName, stripPosition: dsmlFinalClean }, '[agentExecutor] Stripping residual DSML');
     fullText = fullText.substring(0, dsmlFinalClean).trim();
   }
 
-  console.log(`[agentExecutor] Agent ${agentName}: done, text=${fullText.length} chars, tools=${allToolCalls.length}`);
+  logger.info({ agent: agentName, textLength: fullText.length, toolCallCount: allToolCalls.length }, '[agentExecutor] Execution complete');
+  pool.reportSuccess(keyId);
   return { text: fullText, toolCalls: allToolCalls };
 }

@@ -14,7 +14,7 @@ import { parseSentimentBlock } from '@/lib/utils';
  * - 可 @某个 agent → 仅该 agent 回复
  * - 不 @任何人 → 所有 agent 依次回复
  * 
- * Agent 回复时可使用工具（查询股价、新闻、K线等）
+ * Agent 回复时可使用工具（查询股价、新闻等）
  */
 export async function POST(request: NextRequest) {
   try {

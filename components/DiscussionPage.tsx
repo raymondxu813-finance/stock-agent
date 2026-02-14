@@ -5,8 +5,10 @@ import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, Arro
 import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
 import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
+import { toPng } from 'html-to-image';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
 import { AgentAvatar } from './AgentAvatar';
+import { useTheme } from '@/lib/ThemeContext';
 
 // 根据 agent 信息获取头像类型
 const getAvatarType = (agent: Agent): AvatarType => {
@@ -156,7 +158,7 @@ const dedupToolCalls = (calls?: ToolCallRecord[]): ToolCallRecord[] | undefined 
 };
 
 // Figma 统一气泡背景色
-const BUBBLE_BG = 'bg-[#F8F8F8]';
+const BUBBLE_BG = 'bg-surface-bubble';
 
 // ===== SVG 图标组件 =====
 
@@ -214,20 +216,6 @@ const ToolNewsIcon = ({ size = 18 }: { size?: number }) => (
   </svg>
 );
 
-/** 工具图标 — 分析K线数据 (蜡烛图) */
-const ToolKlineIcon = ({ size = 18 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
-    <rect x="1" y="1" width="18" height="18" rx="5" fill="#F5F3FF" stroke="#C4B5FD" strokeWidth="0.5" />
-    {/* K线蜡烛 */}
-    <line x1="6" y1="4" x2="6" y2="16" stroke="#8B5CF6" strokeWidth="1" opacity="0.4" />
-    <rect x="4.5" y="6" width="3" height="5" rx="0.5" fill="#EF4444" />
-    <line x1="10" y1="5" x2="10" y2="15" stroke="#8B5CF6" strokeWidth="1" opacity="0.4" />
-    <rect x="8.5" y="7" width="3" height="5" rx="0.5" fill="#22C55E" />
-    <line x1="14" y1="4" x2="14" y2="14" stroke="#8B5CF6" strokeWidth="1" opacity="0.4" />
-    <rect x="12.5" y="5" width="3" height="6" rx="0.5" fill="#EF4444" />
-  </svg>
-);
-
 /** 工具图标 — 通用/未知工具 (齿轮) */
 const ToolGenericIcon = ({ size = 18 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
@@ -258,7 +246,7 @@ const getAvatarTypeByName = (name: string, agents: Agent[]): AvatarType => {
 const SentimentAvatar = ({ name, borderColor, agents, size = 28 }: { name: string; borderColor: string; agents: Agent[]; size?: number }) => (
   <div className="flex flex-col items-center gap-0.5" title={name}>
     <div className="rounded-full p-[2px]" style={{ background: borderColor }}>
-      <div className="rounded-full overflow-hidden bg-white">
+      <div className="rounded-full overflow-hidden bg-surface-card">
         <AgentAvatar type={getAvatarTypeByName(name, agents)} size={size} />
       </div>
     </div>
@@ -275,9 +263,9 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
   const getSentimentLabel = (s: string) =>
     s === 'bullish' ? '看涨' : s === 'bearish' ? '看跌' : '中性';
   const getSentimentTagClass = (s: string) =>
-    s === 'bullish' ? 'bg-red-50 text-[#E05454] border border-red-100' :
-    s === 'bearish' ? 'bg-green-50 text-[#2EA66E] border border-green-100' :
-    'bg-[#F5F5F5] text-[#999999] border border-[#EEEEEE]';
+    s === 'bullish' ? 'bg-[#E05454]/10 text-[#E05454] border border-[#E05454]/20' :
+    s === 'bearish' ? 'bg-[#2EA66E]/10 text-[#2EA66E] border border-[#2EA66E]/20' :
+    'bg-surface-page text-content-muted border border-line-light';
 
   // === 简约版：每个标的分2行显示 ===
   // 第1行：涨跌图标(w-4) + 中文股票代号(股票编号)
@@ -287,7 +275,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <SentimentChartIcon size={16} />
-          <h4 className="text-[14px] font-bold text-[#1A1A1A]">情绪</h4>
+          <h4 className="text-[14px] font-bold text-content-heading">情绪</h4>
         </div>
         <ul className="space-y-2">
           {items.map((item, index) => (
@@ -298,19 +286,19 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                   {item.overallSentiment === 'bullish' ? <BullishIcon size={14} /> :
                    item.overallSentiment === 'bearish' ? <BearishIcon size={14} /> : <NeutralIcon size={14} />}
                 </span>
-                <span className="text-[13px] text-[#333333] leading-relaxed font-bold">{item.stock}</span>
+                <span className="text-[13px] text-content-primary leading-relaxed font-bold">{item.stock}</span>
               </div>
               {/* 第2行：情绪标签 + agent头像 */}
               <div className="flex items-center gap-1.5 flex-wrap pl-6">
                 {/* 看涨组 */}
                 {item.bullishAgents.length > 0 && (
-                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-red-200 bg-red-50">
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-[#E05454]/20 bg-[#E05454]/10">
                     <span className="text-[10px] text-[#E05454] font-semibold flex-shrink-0">看涨</span>
                     <div className="flex items-center">
                       {item.bullishAgents.map((name, i) => {
                         const agent = agents.find(a => a.name === name);
                         return agent ? (
-                          <span key={`b-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 看涨`}>
+                          <span key={`b-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 看涨`}>
                             <AgentAvatar type={getAvatarType(agent)} size={20} />
                           </span>
                         ) : null;
@@ -320,13 +308,13 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                 )}
                 {/* 中性组 */}
                 {item.neutralAgents.length > 0 && (
-                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-[#E0E0E0] bg-[#F5F5F5]">
-                    <span className="text-[10px] text-[#999999] font-semibold flex-shrink-0">中性</span>
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-line-dashed bg-surface-page">
+                    <span className="text-[10px] text-content-muted font-semibold flex-shrink-0">中性</span>
                     <div className="flex items-center">
                       {item.neutralAgents.map((name, i) => {
                         const agent = agents.find(a => a.name === name);
                         return agent ? (
-                          <span key={`n-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 中性`}>
+                          <span key={`n-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 中性`}>
                             <AgentAvatar type={getAvatarType(agent)} size={20} />
                           </span>
                         ) : null;
@@ -336,13 +324,13 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                 )}
                 {/* 看跌组 */}
                 {item.bearishAgents.length > 0 && (
-                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-green-200 bg-green-50">
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-[#2EA66E]/20 bg-[#2EA66E]/10">
                     <span className="text-[10px] text-[#2EA66E] font-semibold flex-shrink-0">看跌</span>
                     <div className="flex items-center">
                       {item.bearishAgents.map((name, i) => {
                         const agent = agents.find(a => a.name === name);
                         return agent ? (
-                          <span key={`e-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 看跌`}>
+                          <span key={`e-${i}`} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: i > 0 ? -4 : 0, zIndex: i }} title={`${name} 看跌`}>
                             <AgentAvatar type={getAvatarType(agent)} size={20} />
                           </span>
                         ) : null;
@@ -362,17 +350,17 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2.5 mb-3">
-        <div className="w-7 h-7 rounded-lg bg-red-50 flex items-center justify-center">
+        <div className="w-7 h-7 rounded-lg bg-[#E05454]/10 flex items-center justify-center">
           <SentimentChartIcon size={16} />
         </div>
-        <h4 className="text-[16px] font-bold text-[#1A1A1A]">情绪</h4>
+        <h4 className="text-[16px] font-bold text-content-heading">情绪</h4>
       </div>
 
       <div className="space-y-3">
         {items.map((item, index) => {
           const total = item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length;
           return (
-            <div key={index} className="relative rounded-2xl border border-[#F0F0F0] overflow-hidden bg-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+            <div key={index} className="relative rounded-2xl border border-line-light overflow-hidden bg-surface-card shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
               <div className={`absolute top-0 bottom-0 left-0 w-[3px] ${
                 item.overallSentiment === 'bullish' ? 'bg-gradient-to-b from-[#E05454] to-[#FF7875]' :
                 item.overallSentiment === 'bearish' ? 'bg-gradient-to-b from-[#2EA66E] to-[#52C41A]' :
@@ -385,7 +373,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                     {item.overallSentiment === 'bullish' ? <BullishIcon size={16} /> :
                      item.overallSentiment === 'bearish' ? <BearishIcon size={16} /> : <NeutralIcon size={16} />}
                   </span>
-                  <span className="text-[14px] text-[#333333] font-bold">{item.stock}</span>
+                  <span className="text-[14px] text-content-primary font-bold">{item.stock}</span>
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${getSentimentTagClass(item.overallSentiment)}`}>
                     {getSentimentLabel(item.overallSentiment)}
                   </span>
@@ -394,7 +382,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                 {/* Sentiment Distribution Bar */}
                 {total > 0 && (
                   <div className="mb-3">
-                    <div className="flex h-2 rounded-full overflow-hidden bg-[#F5F5F5]">
+                    <div className="flex h-2 rounded-full overflow-hidden bg-surface-page">
                       {item.bullishAgents.length > 0 && (
                         <div className="bg-gradient-to-r from-[#E05454] to-[#FF7875] transition-all duration-500" style={{ width: `${(item.bullishAgents.length / total) * 100}%` }} />
                       )}
@@ -407,7 +395,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                     </div>
                     <div className="flex items-center justify-between mt-1.5">
                       {item.bullishAgents.length > 0 && <span className="text-[9px] text-[#E05454] font-bold">看涨 {item.bullishAgents.length}</span>}
-                      {item.neutralAgents.length > 0 && <span className="text-[9px] text-[#999999] font-bold">中性 {item.neutralAgents.length}</span>}
+                      {item.neutralAgents.length > 0 && <span className="text-[9px] text-content-muted font-bold">中性 {item.neutralAgents.length}</span>}
                       {item.bearishAgents.length > 0 && <span className="text-[9px] text-[#2EA66E] font-bold">看跌 {item.bearishAgents.length}</span>}
                     </div>
                   </div>
@@ -421,7 +409,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                       <span className="text-[10px] text-[#E05454] font-bold w-7 flex-shrink-0 pt-1">看涨</span>
                       <div className="flex flex-wrap gap-1.5">
                         {item.bullishAgents.map((name, i) => (
-                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-red-50/80 rounded-full border border-red-100/80">
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-[#E05454]/10 rounded-full border border-[#E05454]/20">
                             <SentimentAvatar name={name} borderColor="#EF4444" agents={agents} size={18} />
                             <span className="text-[10px] text-[#E05454] font-semibold">{name}</span>
                           </div>
@@ -435,7 +423,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                       <span className="text-[10px] text-[#2EA66E] font-bold w-7 flex-shrink-0 pt-1">看跌</span>
                       <div className="flex flex-wrap gap-1.5">
                         {item.bearishAgents.map((name, i) => (
-                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-green-50/80 rounded-full border border-green-100/80">
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-[#2EA66E]/10 rounded-full border border-[#2EA66E]/20">
                             <SentimentAvatar name={name} borderColor="#22C55E" agents={agents} size={18} />
                             <span className="text-[10px] text-[#2EA66E] font-semibold">{name}</span>
                           </div>
@@ -446,12 +434,12 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
                   {/* 中性 */}
                   {item.neutralAgents.length > 0 && (
                     <div className="flex items-start gap-2">
-                      <span className="text-[10px] text-[#999999] font-bold w-7 flex-shrink-0 pt-1">中性</span>
+                      <span className="text-[10px] text-content-muted font-bold w-7 flex-shrink-0 pt-1">中性</span>
                       <div className="flex flex-wrap gap-1.5">
                         {item.neutralAgents.map((name, i) => (
-                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-[#F5F5F5]/80 rounded-full border border-[#EEEEEE]">
+                          <div key={i} className="flex items-center gap-1 px-2 py-1 bg-surface-page/80 rounded-full border border-line-light">
                             <SentimentAvatar name={name} borderColor="#AAAAAA" agents={agents} size={18} />
-                            <span className="text-[10px] text-[#999999] font-semibold">{name}</span>
+                            <span className="text-[10px] text-content-muted font-semibold">{name}</span>
                           </div>
                         ))}
                       </div>
@@ -472,7 +460,6 @@ const getToolIcon = (toolName: string, size = 18) => {
   switch (toolName) {
     case 'getStockPrice': return <ToolStockPriceIcon size={size} />;
     case 'getLatestNews': return <ToolNewsIcon size={size} />;
-    case 'getKlineData': return <ToolKlineIcon size={size} />;
     default: return <ToolGenericIcon size={size} />;
   }
 };
@@ -584,13 +571,26 @@ const renderContentWithMentions = (content: string, agents: Agent[]): React.Reac
   });
 };
 
-// localStorage key
-const HISTORY_TOPICS_KEY = 'multiagent_history_topics';
+// localStorage key（按用户 ID 隔离）
+const HISTORY_TOPICS_KEY_PREFIX = 'multiagent_history_topics';
 
-// 保存讨论到localStorage
+/** 获取当前用户的历史记录 localStorage key */
+function getHistoryKey(): string {
+  try {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const user = JSON.parse(userStr);
+      if (user?.id) return `${HISTORY_TOPICS_KEY_PREFIX}_${user.id}`;
+    }
+  } catch { /* ignore */ }
+  return HISTORY_TOPICS_KEY_PREFIX;
+}
+
+// 保存讨论到localStorage（按用户隔离）
 const saveDiscussionToHistory = (discussion: Discussion) => {
   try {
-    const stored = localStorage.getItem(HISTORY_TOPICS_KEY);
+    const key = getHistoryKey();
+    const stored = localStorage.getItem(key);
     const topics: any[] = stored ? JSON.parse(stored) : [];
     
     const now = Date.now();
@@ -617,7 +617,7 @@ const saveDiscussionToHistory = (discussion: Discussion) => {
     
     // 限制最多保存50个
     const limitedTopics = topics.slice(0, 50);
-    localStorage.setItem(HISTORY_TOPICS_KEY, JSON.stringify(limitedTopics));
+    localStorage.setItem(key, JSON.stringify(limitedTopics));
   } catch (error) {
     console.error('[DiscussionPage] Error saving discussion to history:', error);
   }
@@ -630,6 +630,7 @@ type DiscussionPageProps = {
 };
 
 export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: DiscussionPageProps) {
+  const { isDark } = useTheme();
   const [showSummary, setShowSummary] = useState(false);
   const [summaryRoundIndex, setSummaryRoundIndex] = useState<number | null>(null); // 分析报告弹窗显示的轮次（null=最新轮）
   const [showRoundPicker, setShowRoundPicker] = useState(false); // 轮次选择器下拉
@@ -2093,10 +2094,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     setIsGeneratingImage(true);
     let logoEl: HTMLDivElement | null = null;
     try {
-      const { toPng } = await import('html-to-image');
+      // toPng 已在文件顶部静态导入（避免动态 import 导致 chunk 404）
 
-      // 预加载 Logo 并转为 data URL（确保 html-to-image 能正确渲染）
-      const logoDataUrl = await imgToDataUrl('/logo.png');
+      // 预加载 Logo 并转为 data URL（根据主题选择对应 Logo）
+      const logoDataUrl = await imgToDataUrl(isDark ? '/logo-dark.png' : '/logo-light.png');
 
       // 在截图内容顶部注入 Logo
       logoEl = document.createElement('div');
@@ -2122,7 +2123,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
       const dataUrl = await toPng(scrollEl, {
         pixelRatio: 2,
-        backgroundColor: '#FAFAFA',
+        backgroundColor: 'var(--color-bg-empty)',
       });
 
       // 恢复滚动容器样式
@@ -2149,7 +2150,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   const handleDownloadImage = () => {
     if (!shareImageUrl) return;
     const link = document.createElement('a');
-    link.download = `分析报告_第${summaryRoundIndex ?? (rounds.length > 0 ? rounds[rounds.length - 1].roundIndex : 1)}轮.png`;
+    link.download = `leapcat.ai-${discussion.title}.png`;
     link.href = shareImageUrl;
     link.click();
   };
@@ -2160,7 +2161,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     try {
       const res = await fetch(shareImageUrl);
       const blob = await res.blob();
-      const file = new File([blob], '分析报告.png', { type: 'image/png' });
+      const file = new File([blob], `leapcat.ai-${discussion.title}.png`, { type: 'image/png' });
 
       // 优先尝试系统原生分享（移动端）
       if (navigator.share && navigator.canShare?.({ files: [file] })) {
@@ -2191,7 +2192,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   return (
-    <div className="h-full flex flex-col relative" style={{ background: '#FAFAFA' }}>
+    <div className="h-full flex flex-col relative" style={{ background: 'var(--color-bg-empty)' }}>
       {/* 历史话题抽屉 */}
       <HistoryTopicsDrawer
         isOpen={isDrawerOpen}
@@ -2204,20 +2205,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       <div className="absolute top-0 left-0 right-0 z-40">
         {/* 顶栏标题区 — 有独立磨砂背景 */}
         <div className="relative">
-          <div className="absolute inset-0 bg-gradient-to-b from-white/70 via-white/55 to-white/40 backdrop-blur-2xl" />
+          <div className="absolute inset-0 backdrop-blur-2xl" style={{ background: `linear-gradient(to bottom, var(--color-glass-light), var(--color-glass-subtle), var(--color-glass-faint))` }} />
           <div className="relative flex items-center justify-between px-5 py-4">
             <button
               onClick={() => setIsDrawerOpen(true)}
               className="w-10 h-10 flex items-center justify-center active:scale-95 transition-transform"
             >
-              <Menu className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+              <Menu className="w-5 h-5 text-content-primary" strokeWidth={1.5} />
             </button>
-            <h1 className="text-[16px] font-medium text-black flex-1 text-center px-2 truncate whitespace-nowrap overflow-hidden">{discussion.title}</h1>
+            <h1 className="text-[16px] font-medium text-content-primary flex-1 text-center px-2 truncate whitespace-nowrap overflow-hidden">{discussion.title}</h1>
             <button
               onClick={onBack}
               className="w-10 h-10 flex items-center justify-center active:scale-95 transition-transform"
             >
-              <PenSquare className="w-5 h-5 text-[#333333]" strokeWidth={1.5} />
+              <PenSquare className="w-5 h-5 text-content-primary" strokeWidth={1.5} />
             </button>
           </div>
         </div>
@@ -2232,7 +2233,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               <button
                 onClick={() => { setSummaryRoundIndex(latestCompleted.roundIndex); setShowSummary(true); }}
                 className="w-full rounded-2xl px-4 py-0 h-10 border border-[#AAE874]/25 active:scale-[0.98] transition-all duration-200 flex items-center gap-3 group shadow-[0_2px_8px_rgba(170,232,116,0.12)]"
-                style={{ background: 'linear-gradient(135deg, rgba(240,250,230,0.95), rgba(255,255,255,0.95))' }}
+                style={{ background: 'linear-gradient(135deg, var(--color-report-btn-from), var(--color-report-btn-to))' }}
               >
                 <FileText className="w-4 h-4 text-[#7BC74D] flex-shrink-0" strokeWidth={2} />
                 <span className="text-[14px] font-bold text-[#5BB536]">分析报告</span>
@@ -2267,11 +2268,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 <div className="flex justify-end gap-3 px-5 py-3">
                   <div className="max-w-[80%]">
                     <div className="flex items-baseline justify-end gap-2 mb-1.5">
-                      {userTime && <span className="text-[11px] text-[#AAAAAA] font-normal">{formatTime(userTime)}</span>}
-                      <span className="text-[14px] font-bold text-black">你</span>
+                      {userTime && <span className="text-[11px] text-content-placeholder font-normal">{formatTime(userTime)}</span>}
+                      <span className="text-[14px] font-bold text-content-primary">你</span>
                     </div>
                     <div className="bg-[#AAE874]/20 border border-[#AAE874]/30 rounded-2xl rounded-tr-sm px-4 py-3">
-                      <div className="text-[14px] text-[#333333] leading-relaxed whitespace-pre-wrap break-words">
+                      <div className="text-[14px] text-content-primary leading-relaxed whitespace-pre-wrap break-words">
                         {renderContentWithMentions(round.userQuestion, discussion.agents)}
                       </div>
                     </div>
@@ -2299,7 +2300,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           <div key={tcIdx} className="relative cursor-pointer" onClick={(e) => { e.stopPropagation(); setActiveToolTip(prev => prev === tipKey ? null : tipKey); }}>
                             {getToolIcon(tc.toolName, 20)}
                             {activeToolTip === tipKey && (
-                              <div className="absolute left-[calc(100%+6px)] top-1/2 -translate-y-1/2 z-50 whitespace-nowrap bg-white text-[#333333] text-[12px] px-3 py-1.5 rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.1)] border border-[#EEEEEE] pointer-events-auto" style={{ minWidth: 'max-content' }}>
+                              <div className="absolute left-[calc(100%+6px)] top-1/2 -translate-y-1/2 z-50 whitespace-nowrap bg-surface-card text-content-primary text-[12px] px-3 py-1.5 rounded-xl shadow-[0_2px_12px_rgba(0,0,0,0.1)] border border-line-light pointer-events-auto" style={{ minWidth: 'max-content' }}>
                                 <div className="absolute right-full top-1/2 -translate-y-1/2 w-0 h-0 border-t-[5px] border-t-transparent border-b-[5px] border-b-transparent border-r-[6px] border-r-white" />
                                 用到 {toolDisplayNames[tc.toolName] || tc.toolName} 工具
                               </div>
@@ -2312,7 +2313,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                   {/* 名称 + 状态 + 气泡 */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2 mb-1.5">
-                      <h4 className="text-[14px] font-bold text-black">{comment.agentName}</h4>
+                      <h4 className="text-[14px] font-bold text-content-primary">{comment.agentName}</h4>
                       {/* 流式状态指示 / 完成时间 */}
                       {comment.streamStatus === 'tool_calling' ? (
                         <span className="text-[11px] text-amber-500 font-medium flex items-center gap-1">
@@ -2342,16 +2343,16 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           </span>
                         </span>
                       ) : comment.completedAt ? (
-                        <span className="text-[11px] text-[#AAAAAA] font-normal">{formatTime(comment.completedAt)}</span>
+                        <span className="text-[11px] text-content-placeholder font-normal">{formatTime(comment.completedAt)}</span>
                       ) : null}
                     </div>
                     {/* 气泡：thinking/tool_calling状态显示占位气泡，有内容时显示正常气泡 */}
                     {comment.streamStatus === 'thinking' && !comment.content ? (
-                      <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-[#EEEEEE]`}>
+                      <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-line-light`}>
                         <div className="flex gap-1.5 py-1">
-                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                          <span className="w-2 h-2 bg-[#CCCCCC] rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                          <span className="w-2 h-2 bg-content-icon rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-2 h-2 bg-content-icon rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-2 h-2 bg-content-icon rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
                         </div>
                       </div>
                     ) : comment.streamStatus === 'tool_calling' && !comment.content ? (
@@ -2362,8 +2363,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                         </div>
                       </div>
                     ) : (
-                      <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-[#EEEEEE]`}>
-                        <div className="text-[14px] text-[#333333] leading-relaxed whitespace-pre-wrap break-words">
+                      <div className={`${BUBBLE_BG} rounded-2xl rounded-tl-sm px-4 py-3 border border-line-light`}>
+                        <div className="text-[14px] text-content-primary leading-relaxed whitespace-pre-wrap break-words">
                           {renderContentWithMentions(comment.content, discussion.agents)}
                           {comment.streamStatus === 'typing' && <span className="inline-block w-0.5 h-4 bg-[#AAE874] ml-0.5 animate-pulse" />}
                         </div>
@@ -2377,10 +2378,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                             key={sIdx}
                             className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium ${
                               s.sentiment === 'bullish'
-                                ? 'bg-red-50 text-[#E05454] border border-red-200'
+                                ? 'bg-[#E05454]/10 text-[#E05454] border border-[#E05454]/20'
                                 : s.sentiment === 'bearish'
-                                ? 'bg-green-50 text-[#2EA66E] border border-green-200'
-                                : 'bg-[#F8F8F8] text-[#999999] border border-[#EEEEEE]'
+                                ? 'bg-[#2EA66E]/10 text-[#2EA66E] border border-[#2EA66E]/20'
+                                : 'bg-surface-bubble text-content-muted border border-line-light'
                             }`}
                           >
                             {s.sentiment === 'bullish' ? <BullishIcon size={12} /> : s.sentiment === 'bearish' ? <BearishIcon size={12} /> : <NeutralIcon size={12} />}
@@ -2402,7 +2403,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
               {/* 中止轮次标识 */}
               {(round as any).aborted && (
-                <div className="mx-5 my-3 flex items-center justify-center gap-2 py-3 rounded-2xl bg-[#FFF5F5] border border-[#FFE0E0]">
+                <div className="mx-5 my-3 flex items-center justify-center gap-2 py-3 rounded-2xl bg-[#E05454]/10 border border-[#E05454]/20">
                   <Square className="w-3.5 h-3.5 text-[#E05454] fill-[#E05454]" strokeWidth={0} />
                   <span className="text-[13px] text-[#E05454] font-medium">本轮讨论已中止</span>
                 </div>
@@ -2422,15 +2423,15 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                   <div className="absolute inset-0 bg-[#AAE874] opacity-[0.08] blur-3xl rounded-[32px]" />
 
                   {/* Card Container */}
-                  <div className="relative bg-white rounded-[28px] shadow-[0_8px_40px_rgba(0,0,0,0.12)] overflow-hidden border border-[#F0F0F0]">
+                  <div className="relative bg-surface-card rounded-[28px] shadow-[0_8px_40px_rgba(0,0,0,0.12)] overflow-hidden border border-line-light">
                     {/* Card Header — 可点击折叠 */}
                     <div
-                      className="px-5 py-4 flex items-center justify-between cursor-pointer active:bg-[#FAFAFA] transition-colors"
+                      className="px-5 py-4 flex items-center justify-between cursor-pointer active:bg-surface-empty transition-colors"
                       onClick={() => setCollapsedModerator(prev => ({ ...prev, [round.roundIndex]: !prev[round.roundIndex] }))}
                     >
                       <div className="flex items-center gap-2.5">
                         <img src="/brand-avatar.png" alt="主持人" className="w-8 h-8 rounded-full object-cover" />
-                        <h2 className="text-[15px] font-bold text-black leading-tight">主持人分析</h2>
+                        <h2 className="text-[15px] font-bold text-content-primary leading-tight">主持人分析</h2>
                       </div>
                       <div className="flex items-center gap-2">
                         {/* 流式状态（统一为一个指示器） */}
@@ -2449,7 +2450,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           第 {round.roundIndex} 轮
                         </span>
                         {/* 折叠/展开 chevron */}
-                        <ChevronDown className={`w-5 h-5 text-[#AAAAAA] transition-transform duration-200 ${isModeratorCollapsed ? '' : 'rotate-180'}`} />
+                        <ChevronDown className={`w-5 h-5 text-content-placeholder transition-transform duration-200 ${isModeratorCollapsed ? '' : 'rotate-180'}`} />
                       </div>
                     </div>
 
@@ -2469,11 +2470,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           return (
                           <div className="px-5 pt-2 pb-4">
                             <div className="flex items-baseline justify-between mb-2">
-                              <span className="text-[13px] text-[#666666] font-medium">共识度</span>
+                              <span className="text-[13px] text-content-secondary font-medium">共识度</span>
                               <span className={`text-[18px] font-bold ${displayCl >= 70 ? 'text-[#AAE874]' : 'text-[#F59E0B]'}`}>{displayCl}%</span>
                             </div>
                             {/* Progress Bar */}
-                            <div className="relative h-2 bg-[#F0F0F0] rounded-full overflow-hidden">
+                            <div className="relative h-2 bg-surface-hover rounded-full overflow-hidden">
                               <div
                                 className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
                                 style={{
@@ -2492,8 +2493,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           {isStreaming && !currentSummaryText && (
                             <div className="animate-fade-slide-in">
                               <div className="space-y-2 pl-1">
-                                <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%' }} />
-                                <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
+                                <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, var(--color-bg-hover) 25%, var(--color-bg-bubble) 50%, var(--color-bg-hover) 75%)', backgroundSize: '200% 100%' }} />
+                                <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, var(--color-bg-hover) 25%, var(--color-bg-bubble) 50%, var(--color-bg-hover) 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
                               </div>
                             </div>
                           )}
@@ -2512,8 +2513,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                               return (
                                 <div className="animate-fade-slide-in">
                                   <div className="space-y-2 pl-1">
-                                    <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%' }} />
-                                    <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
+                                    <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, var(--color-bg-hover) 25%, var(--color-bg-bubble) 50%, var(--color-bg-hover) 75%)', backgroundSize: '200% 100%' }} />
+                                    <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, var(--color-bg-hover) 25%, var(--color-bg-bubble) 50%, var(--color-bg-hover) 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
                                   </div>
                                 </div>
                               );
@@ -2544,8 +2545,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                             // === 骨架屏组件 ===
                             const SkeletonBlock = () => (
                               <div className="space-y-2 pl-1">
-                                <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%' }} />
-                                <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, #F0F0F0 25%, #F8F8F8 50%, #F0F0F0 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
+                                <div className="h-3 rounded-full w-[85%] animate-shimmer" style={{ background: 'linear-gradient(90deg, var(--color-bg-hover) 25%, var(--color-bg-bubble) 50%, var(--color-bg-hover) 75%)', backgroundSize: '200% 100%' }} />
+                                <div className="h-3 rounded-full w-[65%] animate-shimmer" style={{ background: 'linear-gradient(90deg, var(--color-bg-hover) 25%, var(--color-bg-bubble) 50%, var(--color-bg-hover) 75%)', backgroundSize: '200% 100%', animationDelay: '0.2s' }} />
                               </div>
                             );
 
@@ -2565,8 +2566,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                     }
                                     return (
                                       <div key={sectionName} className="flex items-start gap-2 animate-fade-slide-in">
-                                        <span className="w-4 flex-shrink-0 text-center text-[#999999] text-[14px] leading-[20px]">💬</span>
-                                        <p className="flex-1 text-[13px] text-[#333333] leading-relaxed">{raw.content}</p>
+                                        <span className="w-4 flex-shrink-0 text-center text-content-muted text-[14px] leading-[20px]">💬</span>
+                                        <p className="flex-1 text-[13px] text-content-primary leading-relaxed">{raw.content}</p>
                                       </div>
                                     );
                                   }
@@ -2578,7 +2579,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                         <div key={sectionName} className="animate-fade-slide-in">
                                           <div className="flex items-center gap-2 mb-1.5">
                                             <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
-                                            <h3 className="text-[14px] font-bold text-[#1A1A1A]">共识</h3>
+                                            <h3 className="text-[14px] font-bold text-content-heading">共识</h3>
                                           </div>
                                           <SkeletonBlock />
                                         </div>
@@ -2592,8 +2593,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                       <div key={sectionName} className="space-y-1.5 animate-fade-slide-in">
                                         <div className="flex items-center gap-2">
                                           <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
-                                          <h3 className="text-[14px] font-bold text-[#1A1A1A]">共识</h3>
-                                          <span className="text-[11px] text-[#999999]">{consensusItems.length}项</span>
+                                          <h3 className="text-[14px] font-bold text-content-heading">共识</h3>
+                                          <span className="text-[11px] text-content-muted">{consensusItems.length}项</span>
                                         </div>
                                         <ul className="space-y-2">
                                           {consensusItems.slice(0, 2).map((item, cIdx) => (
@@ -2602,14 +2603,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                 <span className="w-4 flex-shrink-0 flex justify-center mt-[3px]">
                                                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#AAE874" strokeWidth="1.5" /><path d="M5 8.5L7 10.5L11 6" stroke="#AAE874" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
                                                 </span>
-                                                <span className="flex-1 text-[13px] text-[#333333] leading-relaxed">{item.content}</span>
+                                                <span className="flex-1 text-[13px] text-content-primary leading-relaxed">{item.content}</span>
                                               </div>
                                               <div className="flex items-center gap-1.5 pl-6">
                                                 {item.strength && (
                                                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 ${
                                                     item.strength === 'strong' ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
-                                                    item.strength === 'weak' ? 'bg-[#F5F5F5] text-[#999999]' :
-                                                    'bg-amber-50 text-amber-600'
+                                                    item.strength === 'weak' ? 'bg-surface-page text-content-muted' :
+                                                    'bg-[#F59E0B]/10 text-[#F59E0B]'
                                                   }`}>
                                                     {item.strength === 'strong' ? '强' : item.strength === 'weak' ? '弱' : '中'}
                                                   </span>
@@ -2619,7 +2620,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                     {item.agents.map((agentName, aIdx) => {
                                                       const agent = discussion.agents.find(a => a.name === agentName);
                                                       return agent ? (
-                                                        <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={agentName}>
+                                                        <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={agentName}>
                                                           <AgentAvatar type={getAvatarType(agent)} size={20} />
                                                         </span>
                                                       ) : null;
@@ -2641,7 +2642,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                         <div key={sectionName} className="animate-fade-slide-in">
                                           <div className="flex items-center gap-2 mb-1.5">
                                             <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
-                                            <h3 className="text-[14px] font-bold text-[#1A1A1A]">分歧</h3>
+                                            <h3 className="text-[14px] font-bold text-content-heading">分歧</h3>
                                           </div>
                                           <SkeletonBlock />
                                         </div>
@@ -2655,20 +2656,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                       <div key={sectionName} className="space-y-1.5 animate-fade-slide-in">
                                         <div className="flex items-center gap-2">
                                           <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
-                                          <h3 className="text-[14px] font-bold text-[#1A1A1A]">分歧</h3>
-                                          <span className="text-[11px] text-[#999999]">{disagreementItems.length}项</span>
+                                          <h3 className="text-[14px] font-bold text-content-heading">分歧</h3>
+                                          <span className="text-[11px] text-content-muted">{disagreementItems.length}项</span>
                                         </div>
                                         <ul className="space-y-2">
                                           {disagreementItems.slice(0, 2).map((item, dIdx) => (
                                             <li key={dIdx} className="space-y-1.5">
                                               <div className="flex items-start gap-2">
                                                 <span className="w-4 flex-shrink-0 text-center text-[#F59E0B] text-[14px] leading-[20px]">⚡</span>
-                                                <span className="text-[13px] text-[#333333] leading-relaxed flex-1 min-w-0">{item.topic}</span>
+                                                <span className="text-[13px] text-content-primary leading-relaxed flex-1 min-w-0">{item.topic}</span>
                                                 {item.nature && (
                                                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 mt-[2px] ${
-                                                    item.nature === 'fundamental' ? 'bg-red-50 text-[#E05454]' :
-                                                    item.nature === 'strategic' ? 'bg-amber-50 text-amber-600' :
-                                                    'bg-[#F5F5F5] text-[#999999]'
+                                                    item.nature === 'fundamental' ? 'bg-[#E05454]/10 text-[#E05454]' :
+                                                    item.nature === 'strategic' ? 'bg-[#F59E0B]/10 text-[#F59E0B]' :
+                                                    'bg-surface-page text-content-muted'
                                                   }`}>
                                                     {item.nature === 'fundamental' ? '根本性' : item.nature === 'strategic' ? '策略性' : '程度性'}
                                                   </span>
@@ -2682,7 +2683,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                     const sideColors = [
                                                       { bg: 'bg-[#5B8DEF]/10', text: 'text-[#5B8DEF]', border: 'border-[#5B8DEF]/20' },
                                                       { bg: 'bg-[#F59E0B]/10', text: 'text-[#F59E0B]', border: 'border-[#F59E0B]/20' },
-                                                      { bg: 'bg-[#999999]/10', text: 'text-[#999999]', border: 'border-[#999999]/20' },
+                                                      { bg: 'bg-[#999999]/10', text: 'text-content-muted', border: 'border-[#999999]/20' },
                                                     ];
                                                     const sc = sideColors[sideIdx] || sideColors[2];
                                                     return (
@@ -2694,7 +2695,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                           {side.agents.map((a, aIdx) => {
                                                             const agent = discussion.agents.find(ag => ag.name === a.name);
                                                             return agent ? (
-                                                              <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={a.name}>
+                                                              <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={a.name}>
                                                                 <AgentAvatar type={getAvatarType(agent)} size={20} />
                                                               </span>
                                                             ) : null;
@@ -2719,7 +2720,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                         <div key={sectionName} className="animate-fade-slide-in">
                                           <div className="flex items-center gap-2 mb-1.5">
                                             <SentimentChartIcon size={16} />
-                                            <h3 className="text-[14px] font-bold text-[#1A1A1A]">情绪</h3>
+                                            <h3 className="text-[14px] font-bold text-content-heading">情绪</h3>
                                           </div>
                                           <SkeletonBlock />
                                         </div>
@@ -2766,8 +2767,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                 {/* 总体概述 */}
                                 {ma.summary && (
                                   <div className="flex items-start gap-2">
-                                    <span className="w-4 flex-shrink-0 text-center text-[#999999] text-[14px] leading-[20px]">💬</span>
-                                    <p className="flex-1 text-[13px] text-[#333333] leading-relaxed">{ma.summary}</p>
+                                    <span className="w-4 flex-shrink-0 text-center text-content-muted text-[14px] leading-[20px]">💬</span>
+                                    <p className="flex-1 text-[13px] text-content-primary leading-relaxed">{ma.summary}</p>
                                   </div>
                                 )}
 
@@ -2776,8 +2777,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                   <div className="space-y-1.5">
                                     <div className="flex items-center gap-2">
                                       <Check className="w-4 h-4 text-[#AAE874]" strokeWidth={2.5} />
-                                      <h3 className="text-[14px] font-bold text-[#1A1A1A]">共识</h3>
-                                      <span className="text-[11px] text-[#999999]">{ma.consensus.length}项</span>
+                                      <h3 className="text-[14px] font-bold text-content-heading">共识</h3>
+                                      <span className="text-[11px] text-content-muted">{ma.consensus.length}项</span>
                                     </div>
                                     <ul className="space-y-2">
                                       {ma.consensus.slice(0, 2).map((item, cIdx) => (
@@ -2786,14 +2787,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                             <span className="w-4 flex-shrink-0 flex justify-center mt-[3px]">
                                               <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#AAE874" strokeWidth="1.5" /><path d="M5 8.5L7 10.5L11 6" stroke="#AAE874" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
                                             </span>
-                                            <span className="flex-1 text-[13px] text-[#333333] leading-relaxed">{item.content}</span>
+                                            <span className="flex-1 text-[13px] text-content-primary leading-relaxed">{item.content}</span>
                                           </div>
                                           <div className="flex items-center gap-1.5 pl-6">
                                             {item.strength && (
                                               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 ${
                                                 item.strength === 'strong' ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
-                                                item.strength === 'weak' ? 'bg-[#F5F5F5] text-[#999999]' :
-                                                'bg-amber-50 text-amber-600'
+                                                item.strength === 'weak' ? 'bg-surface-page text-content-muted' :
+                                                'bg-[#F59E0B]/10 text-[#F59E0B]'
                                               }`}>
                                                 {item.strength === 'strong' ? '强' : item.strength === 'weak' ? '弱' : '中'}
                                               </span>
@@ -2803,7 +2804,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                 {item.agents.map((agentName, aIdx) => {
                                                   const agent = discussion.agents.find(a => a.name === agentName);
                                                   return agent ? (
-                                                    <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={agentName}>
+                                                    <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={agentName}>
                                                       <AgentAvatar type={getAvatarType(agent)} size={20} />
                                                     </span>
                                                   ) : null;
@@ -2822,20 +2823,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                   <div className="space-y-1.5">
                                     <div className="flex items-center gap-2">
                                       <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
-                                      <h3 className="text-[14px] font-bold text-[#1A1A1A]">分歧</h3>
-                                      <span className="text-[11px] text-[#999999]">{ma.disagreements.length}项</span>
+                                      <h3 className="text-[14px] font-bold text-content-heading">分歧</h3>
+                                      <span className="text-[11px] text-content-muted">{ma.disagreements.length}项</span>
                                     </div>
                                     <ul className="space-y-2">
                                       {ma.disagreements.slice(0, 2).map((item, dIdx) => (
                                         <li key={dIdx} className="space-y-1.5">
                                           <div className="flex items-start gap-2">
                                             <span className="w-4 flex-shrink-0 text-center text-[#F59E0B] text-[14px] leading-[20px]">⚡</span>
-                                            <span className="text-[13px] text-[#333333] leading-relaxed flex-1 min-w-0">{item.topic}</span>
+                                            <span className="text-[13px] text-content-primary leading-relaxed flex-1 min-w-0">{item.topic}</span>
                                             {item.nature && (
                                               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold flex-shrink-0 mt-[2px] ${
-                                                item.nature === 'fundamental' ? 'bg-red-50 text-[#E05454]' :
-                                                item.nature === 'strategic' ? 'bg-amber-50 text-amber-600' :
-                                                'bg-[#F5F5F5] text-[#999999]'
+                                                item.nature === 'fundamental' ? 'bg-[#E05454]/10 text-[#E05454]' :
+                                                item.nature === 'strategic' ? 'bg-[#F59E0B]/10 text-[#F59E0B]' :
+                                                'bg-surface-page text-content-muted'
                                               }`}>
                                                 {item.nature === 'fundamental' ? '根本性' : item.nature === 'strategic' ? '策略性' : '程度性'}
                                               </span>
@@ -2849,7 +2850,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                 const sideColors = [
                                                   { bg: 'bg-[#5B8DEF]/10', text: 'text-[#5B8DEF]', border: 'border-[#5B8DEF]/20' },
                                                   { bg: 'bg-[#F59E0B]/10', text: 'text-[#F59E0B]', border: 'border-[#F59E0B]/20' },
-                                                  { bg: 'bg-[#999999]/10', text: 'text-[#999999]', border: 'border-[#999999]/20' },
+                                                  { bg: 'bg-[#999999]/10', text: 'text-content-muted', border: 'border-[#999999]/20' },
                                                 ];
                                                 const sc = sideColors[sideIdx] || sideColors[2];
                                                 return (
@@ -2861,7 +2862,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                                       {side.agents.map((a, aIdx) => {
                                                         const agent = discussion.agents.find(ag => ag.name === a.name);
                                                         return agent ? (
-                                                          <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-white" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={a.name}>
+                                                          <span key={aIdx} className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-surface-card" style={{ marginLeft: aIdx > 0 ? -4 : 0, zIndex: aIdx }} title={a.name}>
                                                             <AgentAvatar type={getAvatarType(agent)} size={20} />
                                                           </span>
                                                         ) : null;
@@ -2885,7 +2886,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
                                 {/* 查看完整分析报告 — 仅已完成轮次显示 */}
                                 {!(round as any)._isInProgress && (round.moderatorAnalysis?.consensusLevel ?? 0) > 0 && (
-                                <div className="pt-2 border-t border-[#F0F0F0]/60">
+                                <div className="pt-2" style={{ borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'var(--color-report-summary-border)' }}>
                                   <button
                                     onClick={() => { setSummaryRoundIndex(round.roundIndex); setShowSummary(true); }}
                                     className="w-full flex items-center justify-center gap-1.5 text-[12px] text-[#7BC74D] font-bold py-2 rounded-xl hover:bg-[#AAE874]/8 active:bg-[#AAE874]/15 transition-all"
@@ -2914,7 +2915,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
       {/* Floating Right Buttons — Prompts + Back to Bottom */}
       <div className="absolute right-5 z-[9999] flex flex-col items-center gap-2" style={{ bottom: bottomBarHeight + 12 }}>
-        {/* Prompts Button */}
+        {/* Prompts Button — hidden, keep function for future testing
         <button
           onClick={() => {
             const currentRound = rounds[rounds.length - 1];
@@ -2925,12 +2926,13 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               alert('当前轮次暂无prompts数据');
             }
           }}
-          className="w-10 h-10 rounded-full border border-[#E8E8E8] shadow-[0_2px_12px_rgba(0,0,0,0.08)] flex items-center justify-center active:scale-95 transition-all"
+          className="w-10 h-10 rounded-full border border-line shadow-[0_2px_12px_rgba(0,0,0,0.08)] flex items-center justify-center active:scale-95 transition-all"
           style={{ background: 'rgba(255,255,255,0.92)' }}
           title="查看 Prompts"
         >
-          <FileText className="w-4 h-4 text-[#666666]" />
+          <FileText className="w-4 h-4 text-content-secondary" />
         </button>
+        */}
         {/* Back to Bottom Button */}
         {showScrollToBottom && (
           <button
@@ -2946,30 +2948,30 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       {/* Bottom Action Bar — 与顶栏高度一致 */}
       <div ref={bottomBarRef} className="absolute bottom-0 left-0 right-0 z-50">
         {/* Glassmorphic Background */}
-        <div className="absolute inset-0 bg-gradient-to-t from-[#AAE874]/10 via-white/95 to-white/90 backdrop-blur-xl" />
+        <div className="absolute inset-0 backdrop-blur-xl" style={{ background: `linear-gradient(to top, rgba(170,232,116,0.10), var(--color-glass-strong), var(--color-glass-medium))` }} />
 
         {/* ===== 统一布局（形变动画） ===== */}
         <div className={`relative flex px-5 py-4 ${bottomBarMode === 'edit' && isInputMultiLine ? 'items-end' : 'items-center'}`}>
 
           {/* @-mention 弹窗 — 放在外层容器避免被 overflow:hidden 裁剪 */}
           {bottomBarMode === 'edit' && showMentionPopup && (
-            <div className="absolute bottom-full left-[64px] right-[64px] mb-2 bg-white rounded-2xl border border-[#E8E8E8] shadow-[0_4px_20px_rgba(0,0,0,0.12)] overflow-hidden z-[60]">
-              <div className="px-3 py-2 text-[11px] text-[#999999] font-medium border-b border-[#F0F0F0]">选择要 @的专家</div>
+            <div className="absolute bottom-full left-[64px] right-[64px] mb-2 bg-surface-card rounded-2xl border border-line shadow-[0_4px_20px_rgba(0,0,0,0.12)] overflow-hidden z-[60]">
+              <div className="px-3 py-2 text-[11px] text-content-muted font-medium border-b border-line-light">选择要 @的专家</div>
               {discussion.agents
                 .filter(a => !mentionFilter || a.name.includes(mentionFilter))
                 .map(agent => (
                   <button
                     key={agent.id}
                     onClick={() => handleSelectMention(agent)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-[#F8F8F8] active:bg-[#F0F0F0] transition-colors"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-surface-bubble active:bg-surface-hover transition-colors"
                   >
                     <AgentAvatar type={getAvatarType(agent)} size={28} />
-                    <span className="text-[14px] font-medium text-[#333333]">{agent.name}</span>
+                    <span className="text-[14px] font-medium text-content-primary">{agent.name}</span>
                   </button>
                 ))
               }
               {discussion.agents.filter(a => !mentionFilter || a.name.includes(mentionFilter)).length === 0 && (
-                <div className="px-3 py-3 text-[13px] text-[#999999] text-center">无匹配的专家</div>
+                <div className="px-3 py-3 text-[13px] text-content-muted text-center">无匹配的专家</div>
               )}
             </div>
           )}
@@ -2991,14 +2993,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 textareaRef.current?.blur();
               }
             }}
-            className="flex-shrink-0 w-10 h-10 rounded-full border border-[#E8E8E8] bg-white flex items-center justify-center active:scale-95 shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
+            className="flex-shrink-0 w-10 h-10 rounded-full border border-line bg-surface-card flex items-center justify-center active:scale-95 shadow-[0_2px_8px_rgba(0,0,0,0.04)]"
             style={{ transition: 'transform 0.3s ease, box-shadow 0.3s ease' }}
             title={bottomBarMode === 'discussion' ? '输入提问' : '返回讨论模式'}
           >
             {/* 两个图标叠放，用 opacity + rotate 做交叉过渡 */}
             <div className="relative w-[18px] h-[18px]">
               <Keyboard
-                className="absolute inset-0 w-[18px] h-[18px] text-[#666666]"
+                className="absolute inset-0 w-[18px] h-[18px] text-content-secondary"
                 strokeWidth={2}
                 style={{
                   transition: 'opacity 0.3s ease, transform 0.3s ease',
@@ -3007,7 +3009,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 }}
               />
               <ArrowLeft
-                className="absolute inset-0 w-[18px] h-[18px] text-[#666666]"
+                className="absolute inset-0 w-[18px] h-[18px] text-content-secondary"
                 strokeWidth={2}
                 style={{
                   transition: 'opacity 0.3s ease, transform 0.3s ease',
@@ -3049,7 +3051,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               disabled={isLoading}
               placeholder={isLoading ? '专家们正在讨论中...' : '向AI专家提问...'}
               rows={1}
-              className="block w-full px-5 bg-white border border-[#E8E8E8] text-[14px] text-black placeholder:text-[#AAAAAA] shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-[#F8F8F8] disabled:cursor-not-allowed [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="block w-full px-5 bg-surface-card border border-line text-[14px] text-content-primary placeholder:text-content-placeholder shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-surface-bubble disabled:cursor-not-allowed [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 height: '40px',
                 maxHeight: '98px',
@@ -3085,7 +3087,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             const bgStyle: React.CSSProperties = isStoppable
               ? { background: '#E05454' }
               : isFirstRoundLoading
-                ? { background: '#E8E8E8' }
+                ? { background: 'var(--color-border)' }
                 : { background: 'linear-gradient(to right, #AAE874, #7BC74D)' };
 
             // 确定阴影
@@ -3158,34 +3160,34 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       {/* Prompts Modal */}
       {showPromptsModal && currentRoundPrompts && (
         <div className="absolute inset-0 bg-black/30 flex items-center justify-center z-[10001]" onClick={() => setShowPromptsModal(false)}>
-          <div className="w-full max-w-4xl max-h-[90vh] bg-white rounded-[28px] overflow-hidden flex flex-col mx-4 shadow-[0_8px_40px_rgba(0,0,0,0.12)]" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-[#F0F0F0] flex items-center justify-between">
-              <h2 className="text-[18px] font-bold text-black">Prompts - 第 {rounds.length} 轮</h2>
+          <div className="w-full max-w-4xl max-h-[90vh] bg-surface-card rounded-[28px] overflow-hidden flex flex-col mx-4 shadow-[0_8px_40px_rgba(0,0,0,0.12)]" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-line-light flex items-center justify-between">
+              <h2 className="text-[18px] font-bold text-content-primary">Prompts - 第 {rounds.length} 轮</h2>
               <button
                 onClick={() => setShowPromptsModal(false)}
-                className="w-9 h-9 rounded-full bg-[#F8F8F8] flex items-center justify-center active:scale-95 transition-transform"
+                className="w-9 h-9 rounded-full bg-surface-bubble flex items-center justify-center active:scale-95 transition-transform"
               >
-                <X className="w-5 h-5 text-[#666666]" />
+                <X className="w-5 h-5 text-content-secondary" />
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4">
               {/* Agent Prompts */}
               <div className="mb-6">
-                <h3 className="text-[16px] font-bold text-black mb-4">Agent Prompts</h3>
+                <h3 className="text-[16px] font-bold text-content-primary mb-4">Agent Prompts</h3>
                 {currentRoundPrompts.agents.map((agentPrompt, index) => (
-                  <div key={index} className="mb-6 p-4 bg-[#F8F8F8] rounded-2xl border border-[#EEEEEE]">
+                  <div key={index} className="mb-6 p-4 bg-surface-bubble rounded-2xl border border-line-light">
                     <div className="flex items-center gap-2 mb-3">
                       <AgentAvatar type={getAvatarTypeById(agentPrompt.agentId, discussion.agents)} size={24} />
-                      <h4 className="text-[14px] font-bold text-black">{agentPrompt.agentName}</h4>
+                      <h4 className="text-[14px] font-bold text-content-primary">{agentPrompt.agentName}</h4>
                     </div>
                     <div className="space-y-3">
                       <div>
-                        <div className="text-[12px] font-medium text-[#666666] mb-1">System Prompt:</div>
-                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{agentPrompt.systemPrompt}</pre>
+                        <div className="text-[12px] font-medium text-content-secondary mb-1">System Prompt:</div>
+                        <pre className="text-[12px] text-content-primary bg-surface-card p-3 rounded-xl border border-line-light overflow-x-auto whitespace-pre-wrap">{agentPrompt.systemPrompt}</pre>
                       </div>
                       <div>
-                        <div className="text-[12px] font-medium text-[#666666] mb-1">User Prompt:</div>
-                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{agentPrompt.userPrompt}</pre>
+                        <div className="text-[12px] font-medium text-content-secondary mb-1">User Prompt:</div>
+                        <pre className="text-[12px] text-content-primary bg-surface-card p-3 rounded-xl border border-line-light overflow-x-auto whitespace-pre-wrap">{agentPrompt.userPrompt}</pre>
                       </div>
                     </div>
                   </div>
@@ -3195,23 +3197,23 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               {/* Moderator Prompts */}
               {currentRoundPrompts.moderator && (
                 <div>
-                  <h3 className="text-[16px] font-bold text-black mb-4">Moderator Prompts</h3>
+                  <h3 className="text-[16px] font-bold text-content-primary mb-4">Moderator Prompts</h3>
                   <div className="p-4 bg-[#AAE874]/10 rounded-2xl border border-[#AAE874]/20">
                     <div className="space-y-3">
                       <div>
-                        <div className="text-[12px] font-medium text-[#666666] mb-1">System Prompt:</div>
-                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.systemPrompt}</pre>
+                        <div className="text-[12px] font-medium text-content-secondary mb-1">System Prompt:</div>
+                        <pre className="text-[12px] text-content-primary bg-surface-card p-3 rounded-xl border border-line-light overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.systemPrompt}</pre>
                       </div>
                       <div>
-                        <div className="text-[12px] font-medium text-[#666666] mb-1">User Prompt:</div>
-                        <pre className="text-[12px] text-[#333333] bg-white p-3 rounded-xl border border-[#EEEEEE] overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.userPrompt}</pre>
+                        <div className="text-[12px] font-medium text-content-secondary mb-1">User Prompt:</div>
+                        <pre className="text-[12px] text-content-primary bg-surface-card p-3 rounded-xl border border-line-light overflow-x-auto whitespace-pre-wrap">{currentRoundPrompts.moderator.userPrompt}</pre>
                       </div>
                     </div>
                   </div>
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-[#F0F0F0]">
+            <div className="px-6 py-4 border-t border-line-light">
               <button
                 onClick={() => setShowPromptsModal(false)}
                 className="w-full py-3 bg-[#AAE874] text-white rounded-full text-[14px] font-medium active:scale-[0.98] transition-transform shadow-[0_4px_16px_rgba(170,232,116,0.4)]"
@@ -3231,20 +3233,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       >
         {/* 背景遮罩 */}
         <div
-          className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+          className="absolute inset-0 bg-[var(--color-overlay)] backdrop-blur-[2px]"
           onClick={() => { setShowSummary(false); setShowRoundPicker(false); }}
         />
         {/* 抽屉内容 */}
         <div
-          className={`relative w-full bg-[#FAFAFA] rounded-t-[28px] max-h-[92vh] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
+          className={`relative w-full bg-surface-empty rounded-t-[28px] max-h-[80vh] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
             showSummary ? 'translate-y-0' : 'translate-y-full'
           }`}
         >
             {/* 固定顶栏 — 分析报告 + 第N轮 + 关闭 */}
-            <div className="px-5 pt-3 pb-3 flex flex-col items-center bg-[#FAFAFA] flex-shrink-0">
-              <div className="w-10 h-1 bg-[#E0E0E0] rounded-full mb-3"></div>
+            <div className="px-5 pt-3 pb-3 flex flex-col items-center bg-surface-empty flex-shrink-0">
+              <div className="w-10 h-1 bg-line-dashed rounded-full mb-3"></div>
               <div className="w-full flex items-center">
-                <h2 className="text-[18px] font-extrabold text-[#1A1A1A] tracking-tight">分析报告</h2>
+                <h2 className="text-[18px] font-extrabold text-content-heading tracking-tight">分析报告</h2>
                 {/* 第N轮徽章 + 下拉选择器 */}
                 <div className="relative ml-2.5">
                   <button
@@ -3262,8 +3264,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                   {/* 下拉面板 */}
                   {showRoundPicker && (
                     <>
-                      <div className="fixed inset-0 z-[1]" onClick={() => setShowRoundPicker(false)} />
-                      <div className="absolute top-full left-0 mt-2 z-[2] bg-white rounded-xl shadow-[0_4px_24px_rgba(0,0,0,0.12)] border border-[#F0F0F0] py-1.5 min-w-[140px] max-h-[200px] overflow-y-auto">
+                      <div className="fixed inset-0 z-[9]" onClick={() => setShowRoundPicker(false)} />
+                      <div className="absolute top-full left-0 mt-2 z-[10] bg-surface-card rounded-xl shadow-[0_4px_24px_rgba(0,0,0,0.12)] border border-line-light py-1.5 min-w-[140px] max-h-[200px] overflow-y-auto">
                         {rounds.filter(r => !(r as any)._isInProgress && (r.moderatorAnalysis?.consensusLevel ?? 0) > 0).map(r => {
                           const crForPicker = rounds.filter(rr => !(rr as any)._isInProgress && (rr.moderatorAnalysis?.consensusLevel ?? 0) > 0);
                           const currentDisplayRound = summaryRoundIndex ?? (crForPicker.length > 0 ? crForPicker[crForPicker.length - 1].roundIndex : 1);
@@ -3272,10 +3274,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                             <button
                               key={r.roundIndex}
                               onClick={() => { setSummaryRoundIndex(r.roundIndex); setShowRoundPicker(false); }}
-                              className={`w-full px-3.5 py-2 flex items-center justify-between gap-3 text-left transition-colors ${isActive ? 'bg-[#AAE874]/10' : 'hover:bg-[#F8F8F8]'}`}
+                              className={`w-full px-3.5 py-2 flex items-center justify-between gap-3 text-left transition-colors ${isActive ? 'bg-[#AAE874]/10' : 'hover:bg-surface-bubble'}`}
                             >
-                              <span className={`text-[13px] font-medium ${isActive ? 'text-[#5BB536] font-bold' : 'text-[#333333]'}`}>第{r.roundIndex}轮</span>
-                              <span className={`text-[11px] ${isActive ? 'text-[#7BC74D]' : 'text-[#AAAAAA]'}`}>共识 {r.moderatorAnalysis.consensusLevel}%</span>
+                              <span className={`text-[13px] font-medium ${isActive ? 'text-[#5BB536] font-bold' : 'text-content-primary'}`}>第{r.roundIndex}轮</span>
+                              <span className={`text-[11px] ${isActive ? 'text-[#7BC74D]' : 'text-content-placeholder'}`}>共识 {r.moderatorAnalysis.consensusLevel}%</span>
                             </button>
                           );
                         })}
@@ -3286,18 +3288,18 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 <div className="flex-1" />
                 <button
                   onClick={() => { setShowSummary(false); setShowRoundPicker(false); }}
-                  className="w-8 h-8 bg-[#F0F0F0] hover:bg-[#E8E8E8] rounded-full flex items-center justify-center active:scale-90 transition-all"
+                  className="w-8 h-8 bg-surface-hover hover:bg-line rounded-full flex items-center justify-center active:scale-90 transition-all"
                 >
-                  <X className="w-4 h-4 text-[#888888]" />
+                  <X className="w-4 h-4 text-content-muted" />
                 </button>
               </div>
             </div>
 
-            <div ref={summaryScrollRef} className="flex-1 overflow-y-auto bg-[#FAFAFA]">
+            <div ref={summaryScrollRef} className="flex-1 overflow-y-auto bg-surface-empty">
               <div className="p-5 pt-2">
                 {/* Report Header — 标题 */}
                 <div className="mb-6">
-                  <h3 className="text-[18px] font-bold text-[#333333] leading-snug">{discussion.title}</h3>
+                  <h3 className="text-[18px] font-bold text-content-primary leading-snug">{discussion.title}</h3>
                 </div>
 
                 {/* Summary Content */}
@@ -3308,35 +3310,35 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                     ? rounds.find(r => r.roundIndex === summaryRoundIndex) || (completedRoundsForModal.length > 0 ? completedRoundsForModal[completedRoundsForModal.length - 1] : null)
                     : (completedRoundsForModal.length > 0 ? completedRoundsForModal[completedRoundsForModal.length - 1] : null);
                   const analysis = targetRound?.moderatorAnalysis || discussion.moderatorAnalysis;
-                  if (!analysis) return <p className="text-[13px] text-[#999999]">暂无分析数据</p>;
+                  if (!analysis) return <p className="text-[13px] text-content-muted">暂无分析数据</p>;
 
                   return (
                     <>
                       {/* 总体概述 + 数据仪表板 */}
                       <div className="relative mb-6 rounded-2xl overflow-hidden">
                         <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#AAE874] via-[#7BC74D] to-[#5BB536]" />
-                        <div className="bg-gradient-to-b from-[#FAFEF5] to-white p-4 pt-5 border border-[#E8EEE0] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
-                          <p className="text-[14px] text-[#444444] leading-[1.75]">
+                        <div className="p-4 pt-5 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)]" style={{ background: `linear-gradient(to bottom, var(--color-report-summary-from), var(--color-report-summary-to))`, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--color-report-summary-border)' }}>
+                          <p className="text-[14px] leading-[1.75]" style={{ color: 'var(--color-text-body)' }}>
                             {analysis.summary}
                           </p>
                           {/* Stats Dashboard — 横排指标（等高豆腐块） */}
-                          <div className="grid grid-cols-4 gap-2 mt-4 pt-3.5 border-t border-[#E8EEE0]/80">
+                          <div className="grid grid-cols-4 gap-2 mt-4 pt-3.5" style={{ borderTopWidth: 1, borderTopStyle: 'solid', borderTopColor: 'var(--color-report-summary-border)', opacity: 0.8 }}>
                             {/* 共识度 */}
-                            <div className="flex flex-col items-center justify-center py-2.5 bg-[#FAFAFA] rounded-xl">
+                            <div className="flex flex-col items-center justify-center py-2.5 rounded-xl" style={{ background: 'rgba(170,232,116,0.08)' }}>
                               <div className="relative w-9 h-9 flex-shrink-0 mb-1.5">
                                 <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
-                                  <circle cx="18" cy="18" r="14" fill="none" stroke="#F0F0F0" strokeWidth="2.5" />
+                                  <circle cx="18" cy="18" r="14" fill="none" stroke="var(--color-border)" strokeWidth="2.5" />
                                   <circle cx="18" cy="18" r="14" fill="none"
                                     stroke={analysis.consensusLevel >= 70 ? '#AAE874' : analysis.consensusLevel >= 40 ? '#F59E0B' : '#E05454'}
                                     strokeWidth="2.5" strokeLinecap="round"
                                     strokeDasharray={`${(analysis.consensusLevel / 100) * 87.96} 87.96`} />
                                 </svg>
-                                <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-[#333333]">{analysis.consensusLevel}</span>
+                                <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-content-primary">{analysis.consensusLevel}</span>
                               </div>
-                              <span className="text-[10px] text-[#AAAAAA] leading-none">共识度</span>
+                              <span className="text-[10px] text-content-placeholder leading-none">共识度</span>
                             </div>
                             {/* 参与专家 — 单行堆叠，自适应不溢出 */}
-                            <div className="flex flex-col items-center justify-center py-2.5 bg-[#FAFAFA] rounded-xl">
+                            <div className="flex flex-col items-center justify-center py-2.5 rounded-xl" style={{ background: 'rgba(91,141,239,0.08)' }}>
                               {(() => {
                                 const allAgents = discussion.agents;
                                 const total = allAgents.length;
@@ -3352,7 +3354,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                         {allAgents.map((agent, i) => (
                                           <div
                                             key={i}
-                                            className="absolute rounded-full border-[1.5px] border-white overflow-hidden shadow-[0_0_0_0.5px_rgba(0,0,0,0.06)]"
+                                            className="absolute rounded-full bg-surface-card overflow-hidden"
                                             style={{ left: i * step, width: avatarSize, height: avatarSize, zIndex: i + 1 }}
                                           >
                                             <AgentAvatar type={getAvatarType(agent)} size={avatarSize} />
@@ -3360,7 +3362,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                         ))}
                                       </div>
                                     </div>
-                                    <span className="text-[10px] text-[#AAAAAA] leading-none">{total}位专家</span>
+                                    <span className="text-[10px] text-content-placeholder leading-none">{total}位专家</span>
                                   </>
                                 );
                               })()}
@@ -3370,14 +3372,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                               <div className="w-9 h-9 rounded-full flex items-center justify-center mb-1.5" style={{ background: 'rgba(170,232,116,0.15)' }}>
                                 <Check className="w-4 h-4 text-[#7BC74D]" strokeWidth={3} />
                               </div>
-                              <span className="text-[10px] text-[#AAAAAA] leading-none">共识 <span className="text-[#7BC74D] font-bold">{analysis.consensus.length}</span></span>
+                              <span className="text-[10px] text-content-placeholder leading-none">共识 <span className="text-[#7BC74D] font-bold">{analysis.consensus.length}</span></span>
                             </div>
                             {/* 分歧数 */}
                             <div className="flex flex-col items-center justify-center py-2.5 rounded-xl" style={{ background: 'rgba(245,158,11,0.05)' }}>
                               <div className="w-9 h-9 rounded-full flex items-center justify-center mb-1.5" style={{ background: 'rgba(245,158,11,0.12)' }}>
                                 <AlertCircle className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
                               </div>
-                              <span className="text-[10px] text-[#AAAAAA] leading-none">分歧 <span className="text-[#F59E0B] font-bold">{analysis.disagreements.length}</span></span>
+                              <span className="text-[10px] text-content-placeholder leading-none">分歧 <span className="text-[#F59E0B] font-bold">{analysis.disagreements.length}</span></span>
                             </div>
                           </div>
                         </div>
@@ -3390,22 +3392,22 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center">
                             <Lightbulb className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
                           </div>
-                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">话题维度对比</h4>
-                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.topicComparisons.length}个维度</span>
+                          <h4 className="text-[16px] font-bold text-content-heading">话题维度对比</h4>
+                          <span className="text-[11px] text-content-placeholder font-medium">{analysis.topicComparisons.length}个维度</span>
                         </div>
                         <div className="space-y-3">
                           {analysis.topicComparisons.map((tc, tcIdx) => (
-                            <div key={tcIdx} className="relative rounded-2xl border border-[#F0F0F0] overflow-hidden bg-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                            <div key={tcIdx} className="relative rounded-2xl border border-line-light overflow-hidden bg-surface-card shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
                               <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#F59E0B] to-[#FFD93D]" />
                               <div className="px-4 pl-5 py-3.5">
                                 {/* 标题行：标题自然折行，标签右上角 */}
                                 <div className="mb-3">
                                   <div className="flex items-start justify-between gap-2">
-                                    <h5 className="text-[14px] font-bold text-[#1A1A1A] leading-snug flex-1">{tc.topic}</h5>
+                                    <h5 className="text-[14px] font-bold text-content-heading leading-snug flex-1">{tc.topic}</h5>
                                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 mt-0.5 ${
                                       tc.convergenceLevel === 'high' ? 'bg-[#AAE874]/15 text-[#7BC74D]' :
-                                      tc.convergenceLevel === 'low' ? 'bg-red-50 text-[#E05454]' :
-                                      'bg-amber-50 text-amber-600'
+                                      tc.convergenceLevel === 'low' ? 'bg-[#E05454]/10 text-[#E05454]' :
+                                      'bg-[#F59E0B]/10 text-[#F59E0B]'
                                     }`}>
                                       {tc.convergenceLevel === 'high' ? '高趋同' : tc.convergenceLevel === 'low' ? '低趋同' : '中趋同'}
                                     </span>
@@ -3417,10 +3419,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                     const agent = discussion.agents.find(a => a.name === ap.agentName);
                                     return (
                                       <div key={apIdx} className="flex items-start gap-2">
-                                        {agent && <span className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 mt-0.5"><AgentAvatar type={getAvatarType(agent)} size={20} /></span>}
+                                        {agent && <span className="w-5 h-5 rounded-full overflow-hidden flex-shrink-0 mt-0.5 bg-surface-card"><AgentAvatar type={getAvatarType(agent)} size={20} /></span>}
                                         <div className="flex-1 min-w-0">
-                                          <span className="text-[11px] text-[#AAAAAA] font-medium">{ap.agentName}</span>
-                                          <p className="text-[13px] text-[#444444] leading-relaxed mt-0.5">{ap.position}</p>
+                                          <span className="text-[11px] text-content-placeholder font-medium">{ap.agentName}</span>
+                                          <p className="text-[13px] leading-relaxed mt-0.5" style={{ color: 'var(--color-text-body)' }}>{ap.position}</p>
                                         </div>
                                       </div>
                                     );
@@ -3440,12 +3442,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           <div className="w-7 h-7 rounded-lg bg-[#AAE874]/15 flex items-center justify-center">
                             <Check className="w-4 h-4 text-[#7BC74D]" strokeWidth={3} />
                           </div>
-                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">共识与共识程度</h4>
-                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.consensus.length}项</span>
+                          <h4 className="text-[16px] font-bold text-content-heading">共识与共识程度</h4>
+                          <span className="text-[11px] text-content-placeholder font-medium">{analysis.consensus.length}项</span>
                         </div>
                         <div className="space-y-3">
                           {analysis.consensus.map((item, index) => (
-                            <div key={index} className="relative rounded-2xl border border-[#E8F5D6] overflow-hidden bg-gradient-to-b from-[#FBFEF6] to-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                            <div key={index} className="relative rounded-2xl border border-[#AAE874]/20 overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.03)]" style={{ background: `linear-gradient(to bottom, var(--color-report-consensus-from), var(--color-report-consensus-to))` }}>
                               <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#AAE874] to-[#7BC74D]" />
                               <div className="px-4 pl-5 py-3.5">
                                 <div className="flex items-start gap-3">
@@ -3455,12 +3457,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                   <div className="flex-1 min-w-0">
                                     {/* 内容 + 强度标签 */}
                                     <div className="flex items-start justify-between gap-2 mb-1.5">
-                                      <p className="text-[14px] text-[#333333] font-semibold flex-1 leading-snug">{item.content}</p>
+                                      <p className="text-[14px] text-content-primary font-semibold flex-1 leading-snug">{item.content}</p>
                                       {item.strength && (
                                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 mt-0.5 ${
                                           item.strength === 'strong' ? 'bg-[#AAE874]/20 text-[#5BB536]' :
-                                          item.strength === 'weak' ? 'bg-[#F5F5F5] text-[#AAAAAA]' :
-                                          'bg-amber-50 text-amber-600'
+                                          item.strength === 'weak' ? 'bg-surface-page text-content-placeholder' :
+                                          'bg-[#F59E0B]/10 text-[#F59E0B]'
                                         }`}>
                                           {item.strength === 'strong' ? '强共识' : item.strength === 'weak' ? '弱共识' : '中等共识'}
                                         </span>
@@ -3471,8 +3473,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                       {item.agents.map((agentName, aIdx) => {
                                         const agent = discussion.agents.find(a => a.name === agentName);
                                         return (
-                                          <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-white text-[#7BC74D] border border-[#E8F5D6] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-                                            {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
+                                          <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-surface-card text-[#7BC74D] border border-[#AAE874]/20 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+                                            {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0 bg-surface-card"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
                                             {agentName}
                                           </span>
                                         );
@@ -3480,7 +3482,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                     </div>
                                     {/* Reasoning */}
                                     {item.reasoning && (
-                                      <p className="text-[12px] text-[#888888] leading-relaxed">{item.reasoning}</p>
+                                      <p className="text-[12px] text-content-muted leading-relaxed">{item.reasoning}</p>
                                     )}
                                   </div>
                                 </div>
@@ -3498,23 +3500,23 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center">
                             <AlertCircle className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
                           </div>
-                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">分歧与对立观点</h4>
-                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.disagreements.length}项</span>
+                          <h4 className="text-[16px] font-bold text-content-heading">分歧与对立观点</h4>
+                          <span className="text-[11px] text-content-placeholder font-medium">{analysis.disagreements.length}项</span>
                         </div>
                         <div className="space-y-3">
                           {analysis.disagreements.map((item, index) => (
-                            <div key={index} className="relative rounded-2xl border border-[#F5EED8] overflow-hidden bg-gradient-to-b from-[#FFFDF7] to-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                            <div key={index} className="relative rounded-2xl border border-[#F59E0B]/20 overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.03)]" style={{ background: `linear-gradient(to bottom, var(--color-report-disagree-from), var(--color-report-disagree-to))` }}>
                               <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#F59E0B] to-[#FFD93D]" />
                               <div className="px-4 pl-5 py-3.5">
                                 {/* 标题 + 性质标签 */}
                                 <div className="mb-3">
                                   <div className="flex items-start justify-between gap-2">
-                                    <h5 className="text-[14px] font-bold text-[#1A1A1A] leading-snug flex-1">{item.topic}</h5>
+                                    <h5 className="text-[14px] font-bold text-content-heading leading-snug flex-1">{item.topic}</h5>
                                     {item.nature && (
                                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex-shrink-0 mt-0.5 ${
-                                        item.nature === 'fundamental' ? 'bg-[#FEE2E2] text-[#E05454]' :
-                                        item.nature === 'strategic' ? 'bg-[#FEF3C7] text-[#D97706]' :
-                                        'bg-[#F5F5F5] text-[#999999]'
+                                        item.nature === 'fundamental' ? 'bg-[#E05454]/10 text-[#E05454]' :
+                                        item.nature === 'strategic' ? 'bg-[#D97706]/10 text-[#D97706]' :
+                                        'bg-surface-page text-content-muted'
                                       }`}>
                                         {item.nature === 'fundamental' ? '根本性分歧' : item.nature === 'strategic' ? '策略性分歧' : '程度性分歧'}
                                       </span>
@@ -3526,9 +3528,9 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                   <div className="space-y-2.5 mb-2">
                                     {item.sides.map((side, sideIdx) => {
                                       const sideColors = [
-                                        { bg: 'bg-[#EFF3FE]', text: 'text-[#5B8DEF]', border: 'border-[#D6E2FD]' },
-                                        { bg: 'bg-[#FEF9EE]', text: 'text-[#D97706]', border: 'border-[#FDE68A]' },
-                                        { bg: 'bg-[#F8F8F8]', text: 'text-[#666666]', border: 'border-[#E5E5E5]' },
+                                        { bg: 'bg-[#5B8DEF]/10', text: 'text-[#5B8DEF]', border: 'border-[#5B8DEF]/20' },
+                                        { bg: 'bg-[#D97706]/10', text: 'text-[#D97706]', border: 'border-[#D97706]/20' },
+                                        { bg: 'bg-surface-bubble', text: 'text-content-secondary', border: 'border-line-dashed' },
                                       ];
                                       const sc = sideColors[sideIdx] || sideColors[2];
                                       return (
@@ -3542,8 +3544,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                             {side.agents.map((a, aIdx) => {
                                               const agent = discussion.agents.find(ag => ag.name === a.name);
                                               return (
-                                                <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-white/90 text-[#555555] font-medium shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
-                                                  {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
+                                                <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-surface-card/90 text-content-secondary font-medium shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+                                                  {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0 bg-surface-card"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
                                                   {a.name}
                                                 </span>
                                               );
@@ -3556,14 +3558,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                 )}
                                 {/* Fallback description */}
                                 {(!item.sides || item.sides.length === 0) && item.description && (
-                                  <p className="text-[12px] text-[#888888] mb-2">{item.description}</p>
+                                  <p className="text-[12px] text-content-muted mb-2">{item.description}</p>
                                 )}
                                 {/* Root cause */}
                                 {item.rootCause && (
-                                  <div className="mt-2 pt-2.5 border-t border-[#F0EDE0]">
+                                  <div className="mt-2 pt-2.5 border-t border-line-light">
                                     <div className="flex items-start gap-1.5">
-                                      <span className="text-[10px] text-[#BBBBBB] font-bold flex-shrink-0 mt-[1px]">根源</span>
-                                      <span className="text-[12px] text-[#888888] leading-relaxed">{item.rootCause}</span>
+                                      <span className="text-[10px] text-content-placeholder font-bold flex-shrink-0 mt-[1px]">根源</span>
+                                      <span className="text-[12px] text-content-muted leading-relaxed">{item.rootCause}</span>
                                     </div>
                                   </div>
                                 )}
@@ -3581,26 +3583,26 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           <div className="w-7 h-7 rounded-lg bg-[#FFD93D]/15 flex items-center justify-center">
                             <Lightbulb className="w-4 h-4 text-[#FFD93D]" strokeWidth={2.5} />
                           </div>
-                          <h4 className="text-[16px] font-bold text-[#1A1A1A]">亮眼观点</h4>
-                          <span className="text-[11px] text-[#BBBBBB] font-medium">{analysis.highlights.length}项</span>
+                          <h4 className="text-[16px] font-bold text-content-heading">亮眼观点</h4>
+                          <span className="text-[11px] text-content-placeholder font-medium">{analysis.highlights.length}项</span>
                         </div>
                         <div className="space-y-3">
                           {analysis.highlights.map((hl, hlIdx) => {
                             const proposerAgent = discussion.agents.find(a => a.name === hl.agentName);
                             return (
-                              <div key={hlIdx} className="relative rounded-2xl border border-[#FDE68A]/60 overflow-hidden bg-gradient-to-b from-[#FFFDF5] to-white shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                              <div key={hlIdx} className="relative rounded-2xl border border-[#FDE68A]/60 overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.03)]" style={{ background: `linear-gradient(to bottom, var(--color-report-highlight-from), var(--color-report-highlight-to))` }}>
                                 <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#FFD93D] to-[#FFA500]" />
                                 <div className="px-4 pl-5 py-3.5">
                                   {/* Proposer */}
                                   <div className="flex items-center gap-2 mb-2">
-                                    {proposerAgent && <span className="w-6 h-6 rounded-full overflow-hidden flex-shrink-0"><AgentAvatar type={getAvatarType(proposerAgent)} size={24} /></span>}
+                                    {proposerAgent && <span className="w-6 h-6 rounded-full overflow-hidden flex-shrink-0 bg-surface-card"><AgentAvatar type={getAvatarType(proposerAgent)} size={24} /></span>}
                                     <span className="text-[12px] text-[#D97706] font-bold">{hl.agentName}</span>
                                   </div>
                                   {/* Content */}
-                                  <p className="text-[14px] text-[#333333] leading-[1.7] mb-2">{hl.content}</p>
+                                  <p className="text-[14px] text-content-primary leading-[1.7] mb-2">{hl.content}</p>
                                   {/* Reason */}
                                   {hl.reason && (
-                                    <p className="text-[12px] text-[#888888] leading-relaxed">{hl.reason}</p>
+                                    <p className="text-[12px] text-content-muted leading-relaxed">{hl.reason}</p>
                                   )}
                                 </div>
                               </div>
@@ -3620,7 +3622,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               </div>
             </div>
 
-            <div className="p-5 bg-[#FAFAFA]">
+            <div className="p-5 bg-surface-empty">
               <button
                 onClick={handleShareReport}
                 disabled={isGeneratingImage}
@@ -3648,13 +3650,13 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           {/* 背景遮罩 */}
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShareImageUrl(null)} />
           {/* 预览内容 */}
-          <div className="relative z-[1] w-[90%] max-h-[85vh] flex flex-col items-center gap-4">
+          <div className="relative z-[1] w-[90%] max-h-[80vh] flex flex-col items-center gap-4">
             {/* 关闭按钮 */}
             <button
               onClick={() => setShareImageUrl(null)}
-              className="absolute -top-2 -right-2 w-8 h-8 bg-white/90 rounded-full flex items-center justify-center shadow-lg active:scale-90 transition-all z-[2]"
+              className="absolute -top-2 -right-2 w-8 h-8 bg-surface-card/90 rounded-full flex items-center justify-center shadow-lg active:scale-90 transition-all z-[2]"
             >
-              <X className="w-4 h-4 text-[#666666]" />
+              <X className="w-4 h-4 text-content-secondary" />
             </button>
             {/* 图片预览 */}
             <div className="flex-1 min-h-0 overflow-y-auto rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.2)]">
@@ -3664,7 +3666,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             <div className="flex gap-3 w-full">
               <button
                 onClick={handleDownloadImage}
-                className="flex-1 py-3 bg-white text-[#333333] rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all shadow-[0_2px_12px_rgba(0,0,0,0.1)]"
+                className="flex-1 py-3 bg-surface-card text-content-primary rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all shadow-[0_2px_12px_rgba(0,0,0,0.1)]"
               >
                 <Download className="w-4 h-4" strokeWidth={2.5} />
                 保存图片
