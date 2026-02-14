@@ -1,10 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Docker 部署使用 standalone 输出模式，减小镜像体积
-  output: 'standalone',
+  // 仅在生产构建（Docker）时启用 standalone 模式
+  // 本地开发不需要 standalone（减少 next dev 启动时间）
+  ...(process.env.BUILD_STANDALONE === 'true' ? { output: 'standalone' } : {}),
   experimental: {
-    serverComponentsExternalPackages: ['openai', '@prisma/client', '@prisma/adapter-pg', 'pg', 'pino', 'pino-pretty'],
+    serverComponentsExternalPackages: ['openai', '@prisma/client', '@prisma/adapter-pg', 'pg', 'pino', 'pino-pretty', 'ioredis'],
   },
 }
 

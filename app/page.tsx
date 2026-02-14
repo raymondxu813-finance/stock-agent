@@ -4,10 +4,15 @@ import { useState, useEffect } from 'react';
 import { WelcomePage } from '@/components/WelcomePage';
 import { DiscussionPage } from '@/components/DiscussionPage';
 import { LoginPage } from '@/components/LoginPage';
+import { isApiUrl, isAuthUrl, getApiUrl } from '@/lib/apiConfig';
 import type { Discussion } from '@/types';
 
 /**
  * 全局 fetch 拦截：自动为所有 API 请求携带 Authorization 头
+ *
+ * 支持两种模式：
+ * - 本地开发（无 NEXT_PUBLIC_API_BASE_URL）：匹配相对路径 /api/...
+ * - 生产部署（设了 NEXT_PUBLIC_API_BASE_URL）：同时匹配相对和绝对路径
  */
 const originalFetch = typeof window !== 'undefined' ? window.fetch.bind(window) : fetch;
 
@@ -15,8 +20,8 @@ if (typeof window !== 'undefined') {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
-    // 只为 /api/ 请求添加 token（排除 auth 相关接口）
-    if (url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
+    // 只为 API 请求添加 token（排除 auth 相关接口）
+    if (isApiUrl(url) && !isAuthUrl(url)) {
       const token = localStorage.getItem('access_token');
       if (token) {
         const headers = new Headers(init?.headers);
@@ -30,11 +35,11 @@ if (typeof window !== 'undefined') {
     const response = await originalFetch(input, init);
 
     // 如果返回 401，可能是 token 过期，尝试刷新
-    if (response.status === 401 && url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
+    if (response.status === 401 && isApiUrl(url) && !isAuthUrl(url)) {
       const refreshToken = localStorage.getItem('refresh_token');
       if (refreshToken) {
         try {
-          const refreshResponse = await originalFetch('/api/auth/refresh', {
+          const refreshResponse = await originalFetch(getApiUrl('/api/auth/refresh'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ refreshToken }),

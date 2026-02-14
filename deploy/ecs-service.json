@@ -1,0 +1,36 @@
+{
+  "serviceName": "multiagent-stock-service",
+  "cluster": "multiagent-cluster",
+  "taskDefinition": "multiagent-stock",
+  "desiredCount": 1,
+  "launchType": "FARGATE",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "<PRIVATE_SUBNET_A_ID>",
+        "<PRIVATE_SUBNET_B_ID>"
+      ],
+      "securityGroups": [
+        "<SG_ECS_ID>"
+      ],
+      "assignPublicIp": "DISABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "<TARGET_GROUP_ARN>",
+      "containerName": "multiagent-stock",
+      "containerPort": 3000
+    }
+  ],
+  "deploymentConfiguration": {
+    "minimumHealthyPercent": 100,
+    "maximumPercent": 200,
+    "deploymentCircuitBreaker": {
+      "enable": true,
+      "rollback": true
+    }
+  },
+  "healthCheckGracePeriodSeconds": 60,
+  "enableExecuteCommand": true
+}

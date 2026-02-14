@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { getSession, restoreSession, buildAgentsBriefList } from '@/lib/discussionService';
+import { getSession, getSessionAsync, restoreSession, buildAgentsBriefList } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildRoundSummaryUserPrompt } from '@/prompts/builder';
 import { roundSummarySystemPromptTemplate } from '@/prompts/roundSummaryPrompts';
@@ -31,8 +31,8 @@ export async function POST(request: NextRequest) {
 
     const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData, userQuestion } = validation.data;
 
-    // 恢复或获取 session
-    let session = getSession(sessionId);
+    // 恢复或获取 session（优先内存 -> 持久化存储 -> sessionData 恢复）
+    let session = await getSessionAsync(sessionId);
     if (!session && sessionData) {
       restoreSession(sessionData as Session);
       session = getSession(sessionId);

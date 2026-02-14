@@ -1,0 +1,63 @@
+{
+  "family": "multiagent-stock",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "multiagent-stock",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/multiagent-stock:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "3000" },
+        { "name": "HOSTNAME", "value": "0.0.0.0" },
+        { "name": "NEXT_TELEMETRY_DISABLED", "value": "1" },
+        { "name": "LOG_LEVEL", "value": "info" },
+        { "name": "OPENAI_BASE_URL", "value": "https://api.deepseek.com/v1" },
+        { "name": "OPENAI_MODEL", "value": "deepseek-chat" },
+        { "name": "OPENAI_MAX_TOKENS", "value": "2000" },
+        { "name": "OPENAI_TEMPERATURE", "value": "0.7" },
+        { "name": "CORS_ALLOWED_ORIGINS", "value": "<FRONTEND_DOMAIN>" },
+        { "name": "DATABASE_URL", "value": "postgresql://<DB_USER>:<DB_PASS>@<RDS_ENDPOINT>:5432/multiagent?schema=public" },
+        { "name": "REDIS_URL", "value": "redis://<VALKEY_ENDPOINT>:6379" },
+        { "name": "DB_POOL_MAX", "value": "10" },
+        { "name": "APP_VERSION", "value": "2.1.0" }
+      ],
+      "secrets": [
+        {
+          "name": "JWT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:multiagent/jwt-secret"
+        },
+        {
+          "name": "OPENAI_API_KEYS",
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:multiagent/openai-api-keys"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)throw r.status}).catch(()=>process.exit(1))\""],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 15
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/multiagent-stock",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

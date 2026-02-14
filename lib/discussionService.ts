@@ -759,10 +759,44 @@ export async function summarizeSession(sessionId: string): Promise<SessionSummar
 }
 
 /**
- * 获取会话（用于调试或查询）
+ * 获取会话（同步，仅查内存缓存）
+ *
+ * 本地开发（无 DB）时完全够用。
+ * 生产环境推荐使用 getSessionAsync()，支持从持久化存储恢复。
  */
 export function getSession(sessionId: string): Session | undefined {
   return sessions.get(sessionId);
+}
+
+/**
+ * 获取会话（异步，支持从持久化存储降级读取）
+ *
+ * 1. 先查内存 Map（热数据，最快）
+ * 2. 未命中时查 SessionStore（DB / Redis）
+ * 3. 命中后回填内存 Map，后续读取直接走内存
+ *
+ * 本地开发无 DATABASE_URL 时，MemorySessionStore.get() 读的也是内存，
+ * 不会产生额外开销。
+ */
+export async function getSessionAsync(sessionId: string): Promise<Session | undefined> {
+  // 1. 内存缓存
+  const cached = sessions.get(sessionId);
+  if (cached) return cached;
+
+  // 2. 持久化存储降级读取
+  try {
+    const store = getSessionStore();
+    const stored = await store.get(sessionId);
+    if (stored) {
+      sessions.set(sessionId, stored); // 回填内存
+      logger.info({ sessionId }, '[discussionService] Session restored from store');
+      return stored;
+    }
+  } catch (err) {
+    logger.warn({ err, sessionId }, '[discussionService] Failed to load session from store');
+  }
+
+  return undefined;
 }
 
 /**

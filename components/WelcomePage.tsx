@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Menu, SendHorizontal, LogOut } from 'lucide-react';
+import { getApiUrl } from '@/lib/apiConfig';
 import type { Discussion, AvatarType } from '@/types';
 import { AgentAvatar } from './AgentAvatar';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
@@ -310,7 +311,7 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
     try {
       const agentIds = selectedAgents.map(a => a.agentId);
 
-      const response = await fetch('/api/sessions', {
+      const response = await fetch(getApiUrl('/api/sessions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

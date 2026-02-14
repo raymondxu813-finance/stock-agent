@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { getSession, restoreSession, buildHistoryText } from '@/lib/discussionService';
+import { getSession, getSessionAsync, restoreSession, buildHistoryText } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildAgentSpeechUserPrompt, buildSubsequentRoundSpeechUserPrompt, buildSubsequentRoundWithUserQuestionUserPrompt } from '@/prompts/builder';
 import { executeAgentStream } from '@/lib/agentExecutor';
@@ -39,8 +39,8 @@ export async function POST(request: NextRequest) {
       userMentionedAgentIds
     } = validation.data;
 
-    // 恢复或获取 session
-    let session = getSession(sessionId);
+    // 恢复或获取 session（优先内存 -> 持久化存储 -> sessionData 恢复）
+    let session = await getSessionAsync(sessionId);
     
     if (!session && sessionData) {
       restoreSession(sessionData as Session);

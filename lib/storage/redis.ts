@@ -1,82 +1,178 @@
 // /lib/storage/redis.ts
 
 /**
- * Redis 会话存储（预留接口）
+ * Redis / Valkey 会话存储实现
  *
- * 生产环境推荐使用。支持：
- * - 多实例共享会话
- * - 自动 TTL 过期
- * - 分布式锁
+ * 适用于多实例部署场景下的会话共享。
+ * 支持 TTL 自动过期，兼容 AWS Valkey（Redis 协议兼容）。
  *
- * 使用时需要安装 ioredis：npm install ioredis
- * 然后取消注释下面的实现代码。
+ * 本地开发：无需 Redis，不设 REDIS_URL 即自动跳过
+ * 生产环境：设置 REDIS_URL 后自动启用
  */
 
+import Redis from 'ioredis';
 import type { Session } from '../discussionService';
 import type { SessionStore } from './types';
+import { logger } from '../logger';
 
-// 默认 TTL：24 小时
-const DEFAULT_TTL = 24 * 60 * 60;
+/** Key 前缀 */
 const KEY_PREFIX = 'session:';
+/** 用户索引前缀 */
 const USER_INDEX_PREFIX = 'user_sessions:';
+/** 默认 TTL：7 天（秒） */
+const DEFAULT_TTL = 7 * 24 * 60 * 60;
 
 export class RedisSessionStore implements SessionStore {
-  // private redis: Redis;
+  private client: Redis;
 
-  constructor() {
-    // TODO: 启用 Redis 时取消注释
-    // const Redis = require('ioredis');
-    // this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-    // console.log('[RedisSessionStore] Connected to Redis');
-    console.warn('[RedisSessionStore] Redis not configured. Install ioredis and set REDIS_URL to enable.');
+  constructor(redisUrl?: string) {
+    const url = redisUrl || process.env.REDIS_URL;
+    if (!url) {
+      throw new Error('REDIS_URL is required for RedisSessionStore');
+    }
+
+    this.client = new Redis(url, {
+      maxRetriesPerRequest: 3,
+      retryStrategy(times: number) {
+        if (times > 5) return null; // 超过 5 次停止重试
+        return Math.min(times * 500, 5000);
+      },
+      lazyConnect: true,
+    });
+
+    this.client.on('error', (err: Error) => {
+      logger.error({ err }, '[RedisSessionStore] Connection error');
+    });
+
+    this.client.on('connect', () => {
+      logger.info('[RedisSessionStore] Connected');
+    });
+
+    // 延迟连接
+    this.client.connect().catch((err: unknown) => {
+      logger.error({ err }, '[RedisSessionStore] Initial connection failed');
+    });
   }
 
   async get(sessionId: string): Promise<Session | null> {
-    // const data = await this.redis.get(KEY_PREFIX + sessionId);
-    // if (!data) return null;
-    // return JSON.parse(data) as Session;
-    throw new Error('RedisSessionStore not implemented. Set REDIS_URL and install ioredis.');
+    try {
+      const data = await this.client.get(`${KEY_PREFIX}${sessionId}`);
+      if (!data) return null;
+      return JSON.parse(data) as Session;
+    } catch (err) {
+      logger.error({ err, sessionId }, '[RedisSessionStore] get() failed');
+      return null;
+    }
   }
 
   async set(sessionId: string, session: Session, ttlSeconds?: number): Promise<void> {
-    // const ttl = ttlSeconds || DEFAULT_TTL;
-    // const data = JSON.stringify(session);
-    // await this.redis.setex(KEY_PREFIX + sessionId, ttl, data);
-    //
-    // // 维护用户索引
-    // const userId = (session as any).userId;
-    // if (userId) {
-    //   await this.redis.sadd(USER_INDEX_PREFIX + userId, sessionId);
-    //   await this.redis.expire(USER_INDEX_PREFIX + userId, ttl);
-    // }
-    throw new Error('RedisSessionStore not implemented.');
+    const ttl = ttlSeconds ?? DEFAULT_TTL;
+    const data = JSON.stringify(session);
+
+    try {
+      const pipeline = this.client.pipeline();
+      pipeline.setex(`${KEY_PREFIX}${sessionId}`, ttl, data);
+
+      // 维护用户 -> 会话 ID 的索引（Sorted Set，score 为时间戳）
+      if (session.userId) {
+        pipeline.zadd(
+          `${USER_INDEX_PREFIX}${session.userId}`,
+          Date.now().toString(),
+          sessionId
+        );
+      }
+
+      await pipeline.exec();
+    } catch (err) {
+      logger.error({ err, sessionId }, '[RedisSessionStore] set() failed');
+      throw err;
+    }
   }
 
   async delete(sessionId: string): Promise<void> {
-    // await this.redis.del(KEY_PREFIX + sessionId);
-    throw new Error('RedisSessionStore not implemented.');
+    try {
+      // 先读取 session 获取 userId，以便清理索引
+      const session = await this.get(sessionId);
+      const pipeline = this.client.pipeline();
+      pipeline.del(`${KEY_PREFIX}${sessionId}`);
+
+      if (session?.userId) {
+        pipeline.zrem(`${USER_INDEX_PREFIX}${session.userId}`, sessionId);
+      }
+
+      await pipeline.exec();
+    } catch (err) {
+      logger.error({ err, sessionId }, '[RedisSessionStore] delete() failed');
+      throw err;
+    }
   }
 
-  async listByUser(userId: string, limit?: number): Promise<Session[]> {
-    // const sessionIds = await this.redis.smembers(USER_INDEX_PREFIX + userId);
-    // const sessions: Session[] = [];
-    // for (const id of sessionIds.slice(0, limit || 50)) {
-    //   const session = await this.get(id);
-    //   if (session) sessions.push(session);
-    // }
-    // return sessions;
-    throw new Error('RedisSessionStore not implemented.');
+  async listByUser(userId: string, limit = 50): Promise<Session[]> {
+    try {
+      // 获取最新的 N 个会话 ID（倒序）
+      const sessionIds = await this.client.zrevrange(
+        `${USER_INDEX_PREFIX}${userId}`,
+        0,
+        limit - 1
+      );
+
+      if (!sessionIds.length) return [];
+
+      // 批量获取会话数据
+      const keys = sessionIds.map((id) => `${KEY_PREFIX}${id}`);
+      const results = await this.client.mget(...keys);
+
+      const sessions: Session[] = [];
+      for (const data of results) {
+        if (data) {
+          try {
+            sessions.push(JSON.parse(data) as Session);
+          } catch {
+            // 跳过损坏的数据
+          }
+        }
+      }
+
+      return sessions;
+    } catch (err) {
+      logger.error({ err, userId }, '[RedisSessionStore] listByUser() failed');
+      return [];
+    }
   }
 
   async getAllIds(): Promise<string[]> {
-    // const keys = await this.redis.keys(KEY_PREFIX + '*');
-    // return keys.map(k => k.replace(KEY_PREFIX, ''));
-    throw new Error('RedisSessionStore not implemented.');
+    try {
+      const keys = await this.client.keys(`${KEY_PREFIX}*`);
+      return keys.map((k) => k.replace(KEY_PREFIX, ''));
+    } catch (err) {
+      logger.error({ err }, '[RedisSessionStore] getAllIds() failed');
+      return [];
+    }
   }
 
   async size(): Promise<number> {
-    // const keys = await this.redis.keys(KEY_PREFIX + '*');
-    // return keys.length;
-    throw new Error('RedisSessionStore not implemented.');
+    try {
+      const keys = await this.client.keys(`${KEY_PREFIX}*`);
+      return keys.length;
+    } catch (err) {
+      logger.error({ err }, '[RedisSessionStore] size() failed');
+      return 0;
+    }
+  }
+
+  /** 检查 Redis 连接是否可用 */
+  async isAvailable(): Promise<boolean> {
+    try {
+      const result = await this.client.ping();
+      return result === 'PONG';
+    } catch {
+      return false;
+    }
+  }
+
+  /** 优雅关闭连接 */
+  async disconnect(): Promise<void> {
+    await this.client.quit();
+    logger.info('[RedisSessionStore] Disconnected');
   }
 }

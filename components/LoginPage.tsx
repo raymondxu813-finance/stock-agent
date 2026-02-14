@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { LogIn, UserPlus, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { getApiUrl } from '@/lib/apiConfig';
 
 interface LoginPageProps {
   onLoginSuccess: () => void;
@@ -31,7 +32,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
         ? { username, password }
         : { username, password, displayName: displayName || username };
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(getApiUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

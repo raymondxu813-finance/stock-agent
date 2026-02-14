@@ -9,6 +9,7 @@ import { toPng } from 'html-to-image';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
 import { AgentAvatar } from './AgentAvatar';
 import { useTheme } from '@/lib/ThemeContext';
+import { getApiUrl } from '@/lib/apiConfig';
 
 // 根据 agent 信息获取头像类型
 const getAvatarType = (agent: Agent): AvatarType => {
@@ -1131,7 +1132,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     for (const agent of discussion.agents) {
       const mySpeech = allSpeeches.find(s => s.agentId === agent.id)?.content || '';
 
-      const response = await fetch('/api/agents/reply/stream', {
+      const response = await fetch(getApiUrl('/api/agents/reply/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1240,7 +1241,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       // 新架构：每个Agent每轮只发言1次，不再有针对性回复阶段
 
       for (const agent of discussion.agents) {
-        const response = await fetch('/api/agents/speech/stream', {
+        const response = await fetch(getApiUrl('/api/agents/speech/stream'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1311,7 +1312,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         speech: s.content,
       }));
 
-      const summaryResponse = await fetch('/api/rounds/summary/stream', {
+      const summaryResponse = await fetch(getApiUrl('/api/rounds/summary/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1724,7 +1725,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         // 主动检查是否已中止（避免发起不必要的 fetch）
         if (abortController.signal.aborted) break;
 
-        const response = await fetch('/api/agents/speech/stream', {
+        const response = await fetch(getApiUrl('/api/agents/speech/stream'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1811,7 +1812,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       setCurrentRoundStatus('summary');
       setCurrentSummaryText('');
 
-      const summaryResponse = await fetch('/api/rounds/summary/stream', {
+      const summaryResponse = await fetch(getApiUrl('/api/rounds/summary/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2093,6 +2094,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
     if (!scrollEl) { alert('内容区域未就绪'); return; }
     setIsGeneratingImage(true);
     let logoEl: HTMLDivElement | null = null;
+    let disclaimerEl: HTMLDivElement | null = null;
     try {
       // toPng 已在文件顶部静态导入（避免动态 import 导致 chunk 404）
 
@@ -2104,6 +2106,12 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       logoEl.style.cssText = 'padding: 16px 20px 4px 20px; display: flex; align-items: center;';
       logoEl.innerHTML = `<img src="${logoDataUrl}" style="height: 26px; width: auto;" alt="LeapCat.ai" />`;
       scrollEl.insertBefore(logoEl, scrollEl.firstChild);
+
+      // 在截图内容底部注入免责声明
+      disclaimerEl = document.createElement('div');
+      disclaimerEl.style.cssText = 'padding: 12px 20px 16px 20px; text-align: center; font-size: 11px; color: #999999; line-height: 1.6;';
+      disclaimerEl.textContent = '本报告由 AI 生成，仅供参考，不构成任何投资建议';
+      scrollEl.appendChild(disclaimerEl);
 
       // 临时解除滚动容器的 overflow 限制，让内容完全展开
       const saved = {
@@ -2141,6 +2149,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       // 移除临时注入的 Logo
       if (logoEl && logoEl.parentNode) {
         logoEl.parentNode.removeChild(logoEl);
+      }
+      // 移除临时注入的免责声明
+      if (disclaimerEl && disclaimerEl.parentNode) {
+        disclaimerEl.parentNode.removeChild(disclaimerEl);
       }
       setIsGeneratingImage(false);
     }

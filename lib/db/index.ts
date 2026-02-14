@@ -29,6 +29,11 @@ export function getPrismaClient(): InstanceType<typeof PrismaClient> | null {
   if (!globalForPrisma.prisma) {
     const pool = new pg.Pool({
       connectionString: process.env.DATABASE_URL,
+      max: parseInt(process.env.DB_POOL_MAX || '10'),
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+      // 生产环境 RDS 要求 SSL 连接；本地开发无 SSL 时此选项不影响
+      ...(process.env.NODE_ENV === 'production' ? { ssl: { rejectUnauthorized: false } } : {}),
     });
     const adapter = new PrismaPg(pool);
     globalForPrisma.prisma = new PrismaClient({ adapter });

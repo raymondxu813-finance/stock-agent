@@ -30,11 +30,14 @@ export function getSessionStore(): SessionStore {
         _store = new MemorySessionStore();
       }
     } else if (process.env.REDIS_URL) {
-      // 未来启用 Redis 时切换此处
-      // const { RedisSessionStore } = require('./redis');
-      // _store = new RedisSessionStore();
-      logger.warn('[SessionStore] REDIS_URL set but RedisSessionStore not yet enabled. Using MemorySessionStore.');
-      _store = new MemorySessionStore();
+      try {
+        const { RedisSessionStore } = require('./redis');
+        _store = new RedisSessionStore();
+        logger.info('[SessionStore] Using RedisSessionStore (Redis/Valkey)');
+      } catch (error) {
+        logger.warn({ err: error }, '[SessionStore] Failed to init RedisSessionStore, falling back to MemorySessionStore');
+        _store = new MemorySessionStore();
+      }
     } else {
       logger.info('[SessionStore] Using MemorySessionStore (set DATABASE_URL for production)');
       _store = new MemorySessionStore();

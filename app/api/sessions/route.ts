@@ -56,8 +56,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { getSession } = await import('@/lib/discussionService');
-    const session = getSession(sessionId);
+    const { getSessionAsync } = await import('@/lib/discussionService');
+    const session = await getSessionAsync(sessionId);
 
     if (!session) {
       return NextResponse.json(

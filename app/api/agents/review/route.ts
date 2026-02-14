@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession, restoreSession, buildHistoryText } from '@/lib/discussionService';
+import { getSession, getSessionAsync, restoreSession, buildHistoryText } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildAgentReviewUserPrompt } from '@/prompts/builder';
 import { llmClient } from '@/lib/llmClient';
@@ -21,7 +21,8 @@ export async function POST(request: NextRequest) {
     }
 
     // 恢复或获取 session
-    let session = getSession(sessionId);
+    // 优先内存 -> 持久化存储 -> sessionData 恢复
+    let session = await getSessionAsync(sessionId);
     
     if (!session && sessionData) {
       restoreSession(sessionData as Session);

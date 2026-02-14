@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ArrowLeft, Check } from 'lucide-react';
+import { getApiUrl } from '@/lib/apiConfig';
 import type { Agent, Discussion } from '@/types';
 import type { AgentId } from '@/prompts/roundAgentPrompts';
 
@@ -69,7 +70,7 @@ export function NewDiscussionPage({ onBack, onCreateDiscussion }: NewDiscussionP
       const agentIds = selectedAgents.map(a => a.id) as AgentId[];
 
       // 只创建会话，不运行讨论
-      const response = await fetch('/api/sessions', {
+      const response = await fetch(getApiUrl('/api/sessions'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
