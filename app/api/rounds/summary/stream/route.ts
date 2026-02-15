@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { getSession, getSessionAsync, restoreSession, buildAgentsBriefList } from '@/lib/discussionService';
+import { getSession, getSessionAsync, restoreSession, buildAgentsBriefList, updateAndPersistSession } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildRoundSummaryUserPrompt } from '@/prompts/builder';
 import { roundSummarySystemPromptTemplate } from '@/prompts/roundSummaryPrompts';
@@ -29,12 +29,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData, userQuestion } = validation.data;
+    const { sessionId, roundIndex, agentsSpeeches, agentsReviews, agentsReplies, sessionData, userQuestion, rawSpeeches, userMentionedAgentIds, userQuestionTime } = validation.data;
 
     // 恢复或获取 session（优先内存 -> 持久化存储 -> sessionData 恢复）
     let session = await getSessionAsync(sessionId);
     if (!session && sessionData) {
-      restoreSession(sessionData as Session);
+      await restoreSession(sessionData as Session);
       session = getSession(sessionId);
     }
 
@@ -247,7 +247,7 @@ export async function POST(request: NextRequest) {
                 positions.push({ agentName: a.name, position: '反对' });
               }
             }
-            return { issue: d.topic, positions };
+            return { issue: d.topic, positions, nature: d.nature, rootCause: d.rootCause };
           });
 
           session.rounds.push({
@@ -262,6 +262,8 @@ export async function POST(request: NextRequest) {
               supportingAgents: c.agents,
               supportCount: c.agents.length,
               totalAgents,
+              strength: c.strength,
+              reasoning: c.reasoning,
             })),
             conflicts,
             highlights: roundSummary.highlights,
@@ -269,7 +271,14 @@ export async function POST(request: NextRequest) {
             openQuestions: [],
             nextRoundSuggestions: [],
             sentimentSummary: roundSummary.sentimentSummary,
+            // 前端附加的原始发言数据（含 toolCalls / sentiments），用于历史恢复
+            ...(rawSpeeches ? { rawSpeeches } : {}),
+            // 用户提问数据
+            ...(userQuestion ? { userQuestion, userMentionedAgentIds, userQuestionTime } : {}),
           });
+
+          // 立即持久化到内存 Map + DB/Redis（修复：之前未持久化导致多端丢数据）
+          updateAndPersistSession(session);
           
           // 发送完成信息（包含解析后的结构化数据）
           if (!safeEnqueue(encoder.encode(`data: ${JSON.stringify({ 

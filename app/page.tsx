@@ -63,10 +63,11 @@ if (typeof window !== 'undefined') {
         }
       }
 
-      // 刷新失败，清除 token
+      // 刷新失败，清除 token 并广播事件通知 React 组件跳转登录页
       localStorage.removeItem('access_token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
+      window.dispatchEvent(new Event('auth:expired'));
     }
 
     return response;
@@ -83,6 +84,17 @@ export default function Home() {
     const token = localStorage.getItem('access_token');
     const user = localStorage.getItem('user');
     setIsAuthenticated(!!(token && user));
+  }, []);
+
+  // 监听 auth:expired 事件（fetch 拦截器 refresh 失败时触发）
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setIsAuthenticated(false);
+      setCurrentPage('welcome');
+      setDiscussion(null);
+    };
+    window.addEventListener('auth:expired', handleAuthExpired);
+    return () => window.removeEventListener('auth:expired', handleAuthExpired);
   }, []);
 
   const handleLoginSuccess = () => {
@@ -111,10 +123,10 @@ export default function Home() {
   // 加载中（检查登录状态）
   if (isAuthenticated === null) {
     return (
-      <div className="min-h-screen min-h-[100dvh] flex items-center justify-center bg-surface-page">
+      <div className="min-h-screen min-h-[100dvh] flex items-center justify-center max-sm:items-start max-sm:justify-start bg-surface-page">
         <div className="w-full max-w-[390px] h-[100dvh] max-h-[844px] bg-surface-card overflow-hidden relative
           sm:rounded-[32px] sm:border sm:border-line
-          max-sm:max-h-none max-sm:rounded-none max-sm:border-none
+          max-sm:max-w-none max-sm:max-h-none max-sm:rounded-none max-sm:border-none
           flex items-center justify-center">
           <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
         </div>
@@ -123,11 +135,11 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen min-h-[100dvh] flex items-center justify-center bg-surface-page">
+    <div className="min-h-screen min-h-[100dvh] flex items-center justify-center max-sm:items-start max-sm:justify-start bg-surface-page">
       {/* H5 容器：移动端全屏，桌面端以 390×844 居中展示 */}
       <div className="w-full max-w-[390px] h-[100dvh] max-h-[844px] bg-surface-card overflow-hidden relative
         sm:rounded-[32px] sm:border sm:border-line
-        max-sm:max-h-none max-sm:rounded-none max-sm:border-none">
+        max-sm:max-w-none max-sm:max-h-none max-sm:rounded-none max-sm:border-none">
         {!isAuthenticated && (
           <LoginPage onLoginSuccess={handleLoginSuccess} />
         )}

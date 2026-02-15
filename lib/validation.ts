@@ -75,6 +75,19 @@ export const roundSummarySchema = z.object({
   agentsReplies: z.array(z.any()).optional(),
   sessionData: z.any().optional(),
   userQuestion: z.string().trim().max(2000).optional(),
+  /** 原始发言数据（含 toolCalls / sentiments），由前端附加，用于历史恢复 */
+  rawSpeeches: z.array(z.object({
+    agentId: z.string(),
+    agentName: z.string(),
+    content: z.string(),
+    sentiments: z.array(z.any()).optional(),
+    toolCalls: z.array(z.any()).optional(),
+    completedAt: z.number().optional(),
+  })).optional(),
+  /** 用户 @提及的 agent ID 列表 */
+  userMentionedAgentIds: z.array(z.string()).optional(),
+  /** 用户提问时间戳 */
+  userQuestionTime: z.number().optional(),
 });
 
 /** POST /api/user/message/stream - 用户消息 */

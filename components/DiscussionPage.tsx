@@ -1,11 +1,11 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, ArrowLeft, X, FileText, SendHorizontal, Square, Play, Check, AlertCircle, Lightbulb, Share2, Download, Copy, CheckCheck, Keyboard } from 'lucide-react';
+import { Menu, PenSquare, ChevronDown, ChevronRight, ArrowDown, ArrowRight, ArrowLeft, X, FileText, SendHorizontal, Square, Play, Check, AlertCircle, Lightbulb, Share2, Download, CheckCheck, Keyboard } from 'lucide-react';
 import type { Discussion, AgentComment, RoundData, StockSentiment, SentimentSummaryItem, Agent, AvatarType, ToolCallRecord, TopicComparisonItem, HighlightInsight } from '@/types';
 import { toolDisplayNames } from '@/lib/toolDisplayNames';
 import { parseModeratorSections, parseEnhancedConsensusSection, parseEnhancedDisagreementsSection, parseLegacyConsensusSection, parseLegacyDisagreementsSection, parseSentimentSummarySection } from '@/lib/utils';
-import { toPng } from 'html-to-image';
+import { toPng, toBlob } from 'html-to-image';
 import { HistoryTopicsDrawer } from './HistoryTopicsDrawer';
 import { AgentAvatar } from './AgentAvatar';
 import { useTheme } from '@/lib/ThemeContext';
@@ -361,7 +361,7 @@ const SentimentSection = ({ items, agents, compact = false }: { items: Sentiment
         {items.map((item, index) => {
           const total = item.bullishAgents.length + item.bearishAgents.length + item.neutralAgents.length;
           return (
-            <div key={index} className="relative rounded-2xl border border-line-light overflow-hidden bg-surface-card shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+            <div key={index} className="relative rounded-2xl border border-line-light overflow-hidden bg-surface-card">
               <div className={`absolute top-0 bottom-0 left-0 w-[3px] ${
                 item.overallSentiment === 'bullish' ? 'bg-gradient-to-b from-[#E05454] to-[#FF7875]' :
                 item.overallSentiment === 'bearish' ? 'bg-gradient-to-b from-[#2EA66E] to-[#52C41A]' :
@@ -632,13 +632,86 @@ type DiscussionPageProps = {
 
 export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: DiscussionPageProps) {
   const { isDark } = useTheme();
+  // 截图用 Logo 顶部留白：模拟手机状态栏/安全区域高度
+  // 标准 Safari 浏览模式下 env(safe-area-inset-top) 返回 0（浏览器 UI 自己处理了安全区域），
+  // 所以需要根据设备屏幕尺寸推断实际安全区域高度，用于截图图片的顶部留白
+  const [safeAreaTop, setSafeAreaTop] = useState(16);
+  useEffect(() => {
+    // 第一步：尝试 env() — 在 PWA/standalone 模式下能拿到真实值
+    const probe = document.createElement('div');
+    probe.style.paddingTop = 'env(safe-area-inset-top, 0px)';
+    probe.style.position = 'fixed';
+    probe.style.visibility = 'hidden';
+    probe.style.pointerEvents = 'none';
+    document.body.appendChild(probe);
+    const envVal = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+    document.body.removeChild(probe);
+
+    if (envVal > 0) {
+      setSafeAreaTop(envVal);
+      return;
+    }
+
+    // 第二步：标准 Safari 浏览模式，env() 返回 0
+    // 根据屏幕尺寸推断安全区域高度（用于截图图片构图）
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    if (!isMobile) {
+      setSafeAreaTop(16); // 桌面端：16px 即可
+      return;
+    }
+    const ua = navigator.userAgent;
+    const isIPhone = /iPhone/.test(ua);
+    const h = window.screen.height;
+    if (isIPhone) {
+      if (h >= 852) {
+        // iPhone 14 Pro / 15 / 15 Pro / 16 系列 — Dynamic Island，安全区 ~59px
+        setSafeAreaTop(59);
+      } else if (h >= 812) {
+        // iPhone X / XS / 11 / 12 / 13 / 14 系列 — 刘海屏，安全区 ~47px
+        setSafeAreaTop(47);
+      } else {
+        // iPhone SE / 8 等无刘海机型 — 状态栏 ~20px
+        setSafeAreaTop(20);
+      }
+    } else {
+      // Android 等其他移动设备
+      setSafeAreaTop(24);
+    }
+  }, []);
+  // Logo 预加载为 base64 data URL（解决 html-to-image SVG foreignObject 在移动端 Safari 不渲染 URL 图片的问题）
+  const [logoDataUrl, setLogoDataUrl] = useState<string>('');
+  useEffect(() => {
+    const src = isDark ? '/logo-dark.png' : '/logo-light.png';
+    let cancelled = false;
+    const img = new Image();
+    // 同源图片不设 crossOrigin，避免不必要的 CORS 检查导致静默失败
+    img.onload = () => {
+      if (cancelled) return;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d')!.drawImage(img, 0, 0);
+        setLogoDataUrl(canvas.toDataURL('image/png'));
+      } catch (e) {
+        console.warn('Logo canvas 转换失败:', e);
+      }
+    };
+    img.onerror = () => {
+      if (!cancelled) console.warn('Logo 加载失败:', src);
+    };
+    img.src = src;
+    return () => { cancelled = true; };
+  }, [isDark]);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryRoundIndex, setSummaryRoundIndex] = useState<number | null>(null); // 分析报告弹窗显示的轮次（null=最新轮）
   const [showRoundPicker, setShowRoundPicker] = useState(false); // 轮次选择器下拉
   const [isGeneratingImage, setIsGeneratingImage] = useState(false); // 截图生成中
-  const [shareImageUrl, setShareImageUrl] = useState<string | null>(null); // 长图预览 URL
+  const [shareImageUrl, setShareImageUrl] = useState<string | null>(null); // 长图预览 URL（Object URL）
+  const [shareImageBlob, setShareImageBlob] = useState<Blob | null>(null); // 长图 Blob（供分享按钮直接使用，避免 async 操作破坏手势上下文）
   const [copied, setCopied] = useState(false); // 复制图片到剪贴板成功提示
   const summaryScrollRef = useRef<HTMLDivElement>(null); // 分析报告滚动容器 ref
+  const logoWrapRef = useRef<HTMLDivElement>(null); // Logo 容器 ref（截图时临时修改 paddingTop）
   const [collapsedSummary, setCollapsedSummary] = useState<Record<number, boolean>>({});
   const [collapsedModerator, setCollapsedModerator] = useState<Record<number, boolean>>({}); // 主持人卡片折叠状态
   const [isLoading, setIsLoading] = useState(false);
@@ -667,7 +740,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
 
   const contentRef = useRef<HTMLDivElement>(null);
   const bottomBarRef = useRef<HTMLDivElement>(null);
-  const [bottomBarHeight, setBottomBarHeight] = useState(72); // 默认单行底部栏高度
+  const [bottomBarHeight, setBottomBarHeight] = useState(64); // 默认单行底部栏高度
   const lastScrollTop = useRef(0);
   const hasStartedRef = useRef(false);
   const isScrollingToBottomRef = useRef(false); // 标记是否正在滚动到底部
@@ -1322,6 +1395,15 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           agentsReviews: [],
           agentsReplies: [],
           sessionData: sessionData,
+          // 原始发言数据（含 toolCalls / sentiments），由后端持久化，用于历史恢复
+          rawSpeeches: speeches.map(s => ({
+            agentId: s.agentId,
+            agentName: s.agentName,
+            content: s.content,
+            sentiments: s.sentiments,
+            toolCalls: dedupToolCalls(s.toolCalls),
+            completedAt: s.completedAt,
+          })),
         }),
       });
 
@@ -1823,6 +1905,20 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           agentsReplies: [],
           sessionData,
           ...(userQuestion ? { userQuestion } : {}),
+          // 原始发言数据（含 toolCalls / sentiments），由后端持久化，用于历史恢复
+          rawSpeeches: speeches.map(s => ({
+            agentId: s.agentId,
+            agentName: s.agentName,
+            content: s.content,
+            sentiments: s.sentiments,
+            toolCalls: dedupToolCalls(s.toolCalls),
+            completedAt: s.completedAt,
+          })),
+          // 用户提问附加数据
+          ...(userQuestion ? {
+            userMentionedAgentIds: userMentionedAgentIds && userMentionedAgentIds.length > 0 ? userMentionedAgentIds : undefined,
+            userQuestionTime: userQuestionTimestamp || Date.now(),
+          } : {}),
         }),
         signal: abortController.signal,
       });
@@ -2073,45 +2169,19 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
   };
 
   // 分享报告 — html-to-image 截图（使用 SVG foreignObject，天然支持所有 CSS）
-  // 将图片 URL 转为 data URL（供 html-to-image 截图使用，避免跨域问题）
-  const imgToDataUrl = (src: string): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        canvas.getContext('2d')!.drawImage(img, 0, 0);
-        resolve(canvas.toDataURL('image/png'));
-      };
-      img.onerror = reject;
-      img.src = src;
-    });
-
   const handleShareReport = async () => {
     const scrollEl = summaryScrollRef.current;
     if (!scrollEl) { alert('内容区域未就绪'); return; }
     setIsGeneratingImage(true);
-    let logoEl: HTMLDivElement | null = null;
-    let disclaimerEl: HTMLDivElement | null = null;
+
+    // 截图前：临时禁用 text-size-adjust（移动端 113% 放大会导致截图中文字溢出换行）
+    const htmlEl = document.documentElement;
+    const savedTextSizeAdjust = htmlEl.style.getPropertyValue('-webkit-text-size-adjust');
+    htmlEl.style.setProperty('-webkit-text-size-adjust', 'none');
+    htmlEl.style.setProperty('text-size-adjust', 'none');
+
     try {
-      // toPng 已在文件顶部静态导入（避免动态 import 导致 chunk 404）
-
-      // 预加载 Logo 并转为 data URL（根据主题选择对应 Logo）
-      const logoDataUrl = await imgToDataUrl(isDark ? '/logo-dark.png' : '/logo-light.png');
-
-      // 在截图内容顶部注入 Logo
-      logoEl = document.createElement('div');
-      logoEl.style.cssText = 'padding: 16px 20px 4px 20px; display: flex; align-items: center;';
-      logoEl.innerHTML = `<img src="${logoDataUrl}" style="height: 26px; width: auto;" alt="LeapCat.ai" />`;
-      scrollEl.insertBefore(logoEl, scrollEl.firstChild);
-
-      // 在截图内容底部注入免责声明
-      disclaimerEl = document.createElement('div');
-      disclaimerEl.style.cssText = 'padding: 12px 20px 16px 20px; text-align: center; font-size: 11px; color: #999999; line-height: 1.6;';
-      disclaimerEl.textContent = '本报告由 AI 生成，仅供参考，不构成任何投资建议';
-      scrollEl.appendChild(disclaimerEl);
+      // Logo 和免责声明已作为常驻 React 元素包含在 summaryScrollRef 内，无需动态注入
 
       // 临时解除滚动容器的 overflow 限制，让内容完全展开
       const saved = {
@@ -2125,13 +2195,27 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       scrollEl.style.height = 'auto';
       scrollEl.style.flex = 'none';
 
-      // 等两帧让浏览器完成布局
+      // 截图时临时增大 Logo 顶部间距 → 模拟手机安全区域高度
+      const logoEl = logoWrapRef.current;
+      const savedLogoPt = logoEl ? logoEl.style.paddingTop : '';
+      if (logoEl) logoEl.style.paddingTop = `${safeAreaTop}px`;
+
+      // 等三帧让浏览器完成布局（移动端 Safari 需要更多帧确保渲染）
+      await new Promise(r => requestAnimationFrame(r));
       await new Promise(r => requestAnimationFrame(r));
       await new Promise(r => requestAnimationFrame(r));
 
-      const dataUrl = await toPng(scrollEl, {
+      // 解析 CSS 变量为实际颜色值（移动端 Safari 不支持 toPng 直接使用 CSS 变量）
+      const computedBg = getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-bg-empty').trim() || '#FAFAFA';
+
+      // Safari 双次渲染 workaround：第一次"预热"（Safari 首次渲染常缺失图片），第二次取结果
+      await toPng(scrollEl, { pixelRatio: 1, backgroundColor: computedBg });
+
+      // 使用 toBlob 直接生成 Blob（供分享按钮同步使用，避免 async fetch 破坏手势上下文）
+      const blob = await toBlob(scrollEl, {
         pixelRatio: 2,
-        backgroundColor: 'var(--color-bg-empty)',
+        backgroundColor: computedBg,
       });
 
       // 恢复滚动容器样式
@@ -2139,51 +2223,74 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       scrollEl.style.maxHeight = saved.maxHeight;
       scrollEl.style.height = saved.height;
       scrollEl.style.flex = saved.flex;
+      // 恢复 Logo 顶部间距
+      if (logoEl) logoEl.style.paddingTop = savedLogoPt;
 
-      setShareImageUrl(dataUrl);
+      if (blob) {
+        setShareImageBlob(blob);
+        setShareImageUrl(URL.createObjectURL(blob));
+      } else {
+        throw new Error('toBlob 返回 null');
+      }
     } catch (err: unknown) {
       console.error('截图失败:', err);
       const msg = err instanceof Error ? err.message : String(err);
       alert('生成图片失败: ' + msg);
     } finally {
-      // 移除临时注入的 Logo
-      if (logoEl && logoEl.parentNode) {
-        logoEl.parentNode.removeChild(logoEl);
-      }
-      // 移除临时注入的免责声明
-      if (disclaimerEl && disclaimerEl.parentNode) {
-        disclaimerEl.parentNode.removeChild(disclaimerEl);
+      // 恢复 text-size-adjust
+      if (savedTextSizeAdjust) {
+        htmlEl.style.setProperty('-webkit-text-size-adjust', savedTextSizeAdjust);
+        htmlEl.style.setProperty('text-size-adjust', savedTextSizeAdjust);
+      } else {
+        htmlEl.style.removeProperty('-webkit-text-size-adjust');
+        htmlEl.style.removeProperty('text-size-adjust');
       }
       setIsGeneratingImage(false);
     }
   };
 
-  // 保存长图到本地
-  const handleDownloadImage = () => {
-    if (!shareImageUrl) return;
+  // 保存长图（移动端调起系统分享面板 → 用户可选"存储图像"保存到相册；桌面端直接下载）
+  // 关键：使用预存的 shareImageBlob，同步创建 File，确保 navigator.share 在用户手势窗口内被调用
+  const handleDownloadImage = async () => {
+    if (!shareImageBlob || !shareImageUrl) return;
+    // 仅移动端（<640px）使用 navigator.share，桌面端直接下载
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    if (isMobile && navigator.share) {
+      try {
+        const file = new File([shareImageBlob], `leapcat.ai-${discussion.title}.png`, { type: 'image/png' });
+        await navigator.share({ files: [file], title: '分析报告' });
+        return;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        console.warn('navigator.share 失败，降级为下载:', err);
+      }
+    }
+    // 桌面端：直接下载
     const link = document.createElement('a');
     link.download = `leapcat.ai-${discussion.title}.png`;
     link.href = shareImageUrl;
     link.click();
   };
 
-  // 调用系统分享（移动端）或复制到剪贴板（桌面端）
+  // 分享图片（移动端调起系统分享面板；桌面端复制到剪贴板）
   const handleNativeShare = async () => {
-    if (!shareImageUrl) return;
-    try {
-      const res = await fetch(shareImageUrl);
-      const blob = await res.blob();
-      const file = new File([blob], `leapcat.ai-${discussion.title}.png`, { type: 'image/png' });
-
-      // 优先尝试系统原生分享（移动端）
-      if (navigator.share && navigator.canShare?.({ files: [file] })) {
+    if (!shareImageBlob || !shareImageUrl) return;
+    // 仅移动端（<640px）使用 navigator.share，桌面端走剪贴板
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    if (isMobile && navigator.share) {
+      try {
+        const file = new File([shareImageBlob], `leapcat.ai-${discussion.title}.png`, { type: 'image/png' });
         await navigator.share({ files: [file], title: '分析报告' });
         return;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        console.warn('navigator.share 失败，尝试剪贴板:', err);
       }
-
-      // 桌面端 fallback：复制图片到剪贴板
+    }
+    // 桌面端 fallback：复制图片到剪贴板
+    try {
       if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-        const pngBlob = new Blob([await blob.arrayBuffer()], { type: 'image/png' });
+        const pngBlob = new Blob([shareImageBlob], { type: 'image/png' });
         await navigator.clipboard.write([
           new ClipboardItem({ 'image/png': pngBlob }),
         ]);
@@ -2191,16 +2298,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         setTimeout(() => setCopied(false), 2000);
         return;
       }
-
-      // 最终 fallback：直接下载
-      handleDownloadImage();
-    } catch (err) {
-      // 用户取消分享不报错
-      if ((err as Error).name !== 'AbortError') {
-        console.error('分享失败:', err);
-        handleDownloadImage();
-      }
+    } catch (clipErr) {
+      console.warn('剪贴板复制失败:', clipErr);
     }
+    // 最终 fallback：直接下载
+    handleDownloadImage();
   };
 
   return (
@@ -2218,14 +2320,14 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         {/* 顶栏标题区 — 有独立磨砂背景 */}
         <div className="relative">
           <div className="absolute inset-0 backdrop-blur-2xl" style={{ background: `linear-gradient(to bottom, var(--color-glass-light), var(--color-glass-subtle), var(--color-glass-faint))` }} />
-          <div className="relative flex items-center justify-between px-5 py-4">
+          <div className="relative flex items-center justify-between px-5 py-3">
             <button
               onClick={() => setIsDrawerOpen(true)}
               className="w-10 h-10 flex items-center justify-center active:scale-95 transition-transform"
             >
               <Menu className="w-5 h-5 text-content-primary" strokeWidth={1.5} />
             </button>
-            <h1 className="text-[16px] font-medium text-content-primary flex-1 text-center px-2 truncate whitespace-nowrap overflow-hidden">{discussion.title}</h1>
+            <h1 className="text-[17px] font-medium text-content-primary flex-1 text-center px-2 truncate whitespace-nowrap overflow-hidden">{discussion.title}</h1>
             <button
               onClick={onBack}
               className="w-10 h-10 flex items-center justify-center active:scale-95 transition-transform"
@@ -2261,7 +2363,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
       </div>
 
       {/* Content — 全屏滚动，paddingTop 留出顶栏+分析报告按钮高度，滚动后内容从 header 磨砂层后面穿过 */}
-      <div ref={contentRef} className="flex-1 overflow-y-auto pb-28" style={{ paddingTop: rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) ? '116px' : '72px' }}>
+      <div ref={contentRef} className="flex-1 overflow-y-auto pb-28" style={{ paddingTop: rounds.length > 0 && rounds.some(r => r.moderatorAnalysis?.consensusLevel > 0) ? '108px' : '64px' }}>
         <div className="space-y-0 pb-4">
           {/* 讨论轮次（包含用户自由提问触发的轮次） */}
           {rounds.map((round, roundIdx) => (
@@ -2963,7 +3065,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         <div className="absolute inset-0 backdrop-blur-xl" style={{ background: `linear-gradient(to top, rgba(170,232,116,0.10), var(--color-glass-strong), var(--color-glass-medium))` }} />
 
         {/* ===== 统一布局（形变动画） ===== */}
-        <div className={`relative flex px-5 py-4 ${bottomBarMode === 'edit' && isInputMultiLine ? 'items-end' : 'items-center'}`}>
+        <div className={`relative flex px-5 py-3 ${bottomBarMode === 'edit' && isInputMultiLine ? 'items-end' : 'items-center'}`}>
 
           {/* @-mention 弹窗 — 放在外层容器避免被 overflow:hidden 裁剪 */}
           {bottomBarMode === 'edit' && showMentionPopup && (
@@ -3063,7 +3165,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
               disabled={isLoading}
               placeholder={isLoading ? '专家们正在讨论中...' : '向AI专家提问...'}
               rows={1}
-              className="block w-full px-5 bg-surface-card border border-line text-[14px] text-content-primary placeholder:text-content-placeholder shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-surface-bubble disabled:cursor-not-allowed [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="block w-full px-5 bg-surface-card border border-line text-[15px] text-content-primary placeholder:text-content-placeholder shadow-[0_2px_8px_rgba(0,0,0,0.04)] resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] disabled:bg-surface-bubble disabled:cursor-not-allowed [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 height: '40px',
                 maxHeight: '98px',
@@ -3126,8 +3228,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                 style={{
                   ...bgStyle,
                   boxShadow: shadowStyle,
-                  width: isEdit ? 40 : undefined,
-                  flex: isEdit ? '0 0 40px' : '1 1 0%',
+                  width: isEdit ? '2.5rem' : undefined,
+                  flex: isEdit ? '0 0 2.5rem' : '1 1 0%',
                   marginLeft: 12,
                   cursor: isFirstRoundLoading ? 'not-allowed' : 'pointer',
                   opacity: isFirstRoundLoading ? 0.6 : 1,
@@ -3165,8 +3267,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             );
           })()}
         </div>
-        {/* Safe area spacer — 独立于内容区域，不影响内容行高度 */}
-        <div className="relative" style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
+        {/* Safe area spacer — 兼容 Safari 底部工具栏 */}
+        <div className="relative" style={{ height: 'env(safe-area-inset-bottom, 8px)' }} />
       </div>
 
       {/* Prompts Modal */}
@@ -3250,9 +3352,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
         />
         {/* 抽屉内容 */}
         <div
-          className={`relative w-full bg-surface-empty rounded-t-[28px] max-h-[80vh] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
+          className={`relative w-full bg-surface-empty rounded-t-[28px] overflow-hidden flex flex-col shadow-[0_-12px_60px_rgba(0,0,0,0.15)] transition-transform duration-300 ease-out ${
             showSummary ? 'translate-y-0' : 'translate-y-full'
           }`}
+          style={{ maxHeight: 'calc(100% - 64px)' }}
         >
             {/* 固定顶栏 — 分析报告 + 第N轮 + 关闭 */}
             <div className="px-5 pt-3 pb-3 flex flex-col items-center bg-surface-empty flex-shrink-0">
@@ -3308,7 +3411,11 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
             </div>
 
             <div ref={summaryScrollRef} className="flex-1 overflow-y-auto bg-surface-empty">
-              <div className="p-5 pt-2">
+              {/* Logo — 常驻在报告弹窗内，截图时临时增大 paddingTop 以留出安全区域高度 */}
+              <div ref={logoWrapRef} className="px-5 pt-4 pb-1 flex items-center">
+                <img src={logoDataUrl || (isDark ? '/logo-dark.png' : '/logo-light.png')} alt="LeapCat.ai" className="h-[26px] w-auto" />
+              </div>
+              <div className="px-5 pt-2 pb-0">
                 {/* Report Header — 标题 */}
                 <div className="mb-6">
                   <h3 className="text-[18px] font-bold text-content-primary leading-snug">{discussion.title}</h3>
@@ -3329,7 +3436,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       {/* 总体概述 + 数据仪表板 */}
                       <div className="relative mb-6 rounded-2xl overflow-hidden">
                         <div className="absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#AAE874] via-[#7BC74D] to-[#5BB536]" />
-                        <div className="p-4 pt-5 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.04)]" style={{ background: `linear-gradient(to bottom, var(--color-report-summary-from), var(--color-report-summary-to))`, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--color-report-summary-border)' }}>
+                        <div className="p-4 pt-5 rounded-2xl" style={{ background: `linear-gradient(to bottom, var(--color-report-summary-from), var(--color-report-summary-to))`, borderWidth: 1, borderStyle: 'solid', borderColor: 'var(--color-report-summary-border)' }}>
                           <p className="text-[14px] leading-[1.75]" style={{ color: 'var(--color-text-body)' }}>
                             {analysis.summary}
                           </p>
@@ -3400,8 +3507,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       {/* 话题维度对比 */}
                       {analysis.topicComparisons && analysis.topicComparisons.length > 0 && (
                       <div className="mb-6">
-                        <div className="flex items-center gap-2.5 mb-3">
-                          <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center">
+                        <div className="flex items-center gap-2.5 mb-3 whitespace-nowrap">
+                          <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center flex-shrink-0">
                             <Lightbulb className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
                           </div>
                           <h4 className="text-[16px] font-bold text-content-heading">话题维度对比</h4>
@@ -3409,7 +3516,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                         </div>
                         <div className="space-y-3">
                           {analysis.topicComparisons.map((tc, tcIdx) => (
-                            <div key={tcIdx} className="relative rounded-2xl border border-line-light overflow-hidden bg-surface-card shadow-[0_1px_4px_rgba(0,0,0,0.03)]">
+                            <div key={tcIdx} className="relative rounded-2xl border border-line-light overflow-hidden bg-surface-card">
                               <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#F59E0B] to-[#FFD93D]" />
                               <div className="px-4 pl-5 py-3.5">
                                 {/* 标题行：标题自然折行，标签右上角 */}
@@ -3450,8 +3557,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       {/* 共识与共识程度 */}
                       {analysis.consensus && analysis.consensus.length > 0 && (
                       <div className="mb-6">
-                        <div className="flex items-center gap-2.5 mb-3">
-                          <div className="w-7 h-7 rounded-lg bg-[#AAE874]/15 flex items-center justify-center">
+                        <div className="flex items-center gap-2.5 mb-3 whitespace-nowrap">
+                          <div className="w-7 h-7 rounded-lg bg-[#AAE874]/15 flex items-center justify-center flex-shrink-0">
                             <Check className="w-4 h-4 text-[#7BC74D]" strokeWidth={3} />
                           </div>
                           <h4 className="text-[16px] font-bold text-content-heading">共识与共识程度</h4>
@@ -3459,7 +3566,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                         </div>
                         <div className="space-y-3">
                           {analysis.consensus.map((item, index) => (
-                            <div key={index} className="relative rounded-2xl border border-[#AAE874]/20 overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.03)]" style={{ background: `linear-gradient(to bottom, var(--color-report-consensus-from), var(--color-report-consensus-to))` }}>
+                            <div key={index} className="relative rounded-2xl border border-[#AAE874]/20 overflow-hidden" style={{ background: `linear-gradient(to bottom, var(--color-report-consensus-from), var(--color-report-consensus-to))` }}>
                               <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#AAE874] to-[#7BC74D]" />
                               <div className="px-4 pl-5 py-3.5">
                                 <div className="flex items-start gap-3">
@@ -3485,7 +3592,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                       {item.agents.map((agentName, aIdx) => {
                                         const agent = discussion.agents.find(a => a.name === agentName);
                                         return (
-                                          <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-surface-card text-[#7BC74D] border border-[#AAE874]/20 font-medium shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+                                          <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-[#7BC74D]/10 text-[#7BC74D] border border-[#7BC74D]/30 font-medium">
                                             {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0 bg-surface-card"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
                                             {agentName}
                                           </span>
@@ -3508,8 +3615,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       {/* 分歧与对立观点 */}
                       {analysis.disagreements && analysis.disagreements.length > 0 && (
                       <div className="mb-6">
-                        <div className="flex items-center gap-2.5 mb-3">
-                          <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center">
+                        <div className="flex items-center gap-2.5 mb-3 whitespace-nowrap">
+                          <div className="w-7 h-7 rounded-lg bg-[#F59E0B]/10 flex items-center justify-center flex-shrink-0">
                             <AlertCircle className="w-4 h-4 text-[#F59E0B]" strokeWidth={2.5} />
                           </div>
                           <h4 className="text-[16px] font-bold text-content-heading">分歧与对立观点</h4>
@@ -3517,7 +3624,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                         </div>
                         <div className="space-y-3">
                           {analysis.disagreements.map((item, index) => (
-                            <div key={index} className="relative rounded-2xl border border-[#F59E0B]/20 overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.03)]" style={{ background: `linear-gradient(to bottom, var(--color-report-disagree-from), var(--color-report-disagree-to))` }}>
+                            <div key={index} className="relative rounded-2xl border border-[#F59E0B]/20 overflow-hidden" style={{ background: `linear-gradient(to bottom, var(--color-report-disagree-from), var(--color-report-disagree-to))` }}>
                               <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#F59E0B] to-[#FFD93D]" />
                               <div className="px-4 pl-5 py-3.5">
                                 {/* 标题 + 性质标签 */}
@@ -3556,7 +3663,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                                             {side.agents.map((a, aIdx) => {
                                               const agent = discussion.agents.find(ag => ag.name === a.name);
                                               return (
-                                                <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-surface-card/90 text-content-secondary font-medium shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
+                                                <span key={aIdx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-[#888888]/8 text-content-secondary border border-[#888888]/25 font-medium">
                                                   {agent && <span className="w-4 h-4 rounded-full overflow-hidden flex-shrink-0 bg-surface-card"><AgentAvatar type={getAvatarType(agent)} size={16} /></span>}
                                                   {a.name}
                                                 </span>
@@ -3591,8 +3698,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                       {/* 亮眼观点 */}
                       {analysis.highlights && analysis.highlights.length > 0 && (
                       <div className="mb-6">
-                        <div className="flex items-center gap-2.5 mb-3">
-                          <div className="w-7 h-7 rounded-lg bg-[#FFD93D]/15 flex items-center justify-center">
+                        <div className="flex items-center gap-2.5 mb-3 whitespace-nowrap">
+                          <div className="w-7 h-7 rounded-lg bg-[#FFD93D]/15 flex items-center justify-center flex-shrink-0">
                             <Lightbulb className="w-4 h-4 text-[#FFD93D]" strokeWidth={2.5} />
                           </div>
                           <h4 className="text-[16px] font-bold text-content-heading">亮眼观点</h4>
@@ -3602,7 +3709,7 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                           {analysis.highlights.map((hl, hlIdx) => {
                             const proposerAgent = discussion.agents.find(a => a.name === hl.agentName);
                             return (
-                              <div key={hlIdx} className="relative rounded-2xl border border-[#FDE68A]/60 overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.03)]" style={{ background: `linear-gradient(to bottom, var(--color-report-highlight-from), var(--color-report-highlight-to))` }}>
+                              <div key={hlIdx} className="relative rounded-2xl border border-[#FDE68A]/60 overflow-hidden" style={{ background: `linear-gradient(to bottom, var(--color-report-highlight-from), var(--color-report-highlight-to))` }}>
                                 <div className="absolute top-0 bottom-0 left-0 w-[3px] bg-gradient-to-b from-[#FFD93D] to-[#FFA500]" />
                                 <div className="px-4 pl-5 py-3.5">
                                   {/* Proposer */}
@@ -3632,6 +3739,10 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                   );
                 })()}
               </div>
+              {/* 免责声明 — 常驻在报告弹窗内，截图时自然包含 */}
+              <div className="px-5 pt-2 pb-4 text-center">
+                <p className="text-[11px] text-content-placeholder leading-relaxed">本报告由 AI 生成，仅供参考，不构成任何投资建议</p>
+              </div>
             </div>
 
             <div className="p-5 bg-surface-empty">
@@ -3656,26 +3767,19 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
           </div>
         </div>
 
-      {/* 长图预览浮层 */}
+      {/* 长图预览浮层 — 整体底部对齐，按钮底部间距与讨论页输入框一致 */}
       {shareImageUrl && (
-        <div className="absolute inset-0 z-[20000] flex items-center justify-center">
+        <div className="absolute inset-0 z-[20000] flex items-end justify-center">
           {/* 背景遮罩 */}
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShareImageUrl(null)} />
-          {/* 预览内容 */}
-          <div className="relative z-[1] w-[90%] max-h-[80vh] flex flex-col items-center gap-4">
-            {/* 关闭按钮 */}
-            <button
-              onClick={() => setShareImageUrl(null)}
-              className="absolute -top-2 -right-2 w-8 h-8 bg-surface-card/90 rounded-full flex items-center justify-center shadow-lg active:scale-90 transition-all z-[2]"
-            >
-              <X className="w-4 h-4 text-content-secondary" />
-            </button>
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (shareImageUrl) URL.revokeObjectURL(shareImageUrl); setShareImageUrl(null); setShareImageBlob(null); }} />
+          {/* 预览内容 — 顶部留出一个顶部栏高度(64px)，底部与讨论页输入框对齐 */}
+          <div className="relative z-[1] w-[90%] flex flex-col items-center gap-4 px-0" style={{ maxHeight: 'calc(100% - 64px)', paddingBottom: 'calc(12px + env(safe-area-inset-bottom, 8px))' }}>
             {/* 图片预览 */}
             <div className="flex-1 min-h-0 overflow-y-auto rounded-2xl shadow-[0_8px_40px_rgba(0,0,0,0.2)]">
               <img src={shareImageUrl} alt="分析报告长图" className="w-full block" />
             </div>
             {/* 操作按钮 */}
-            <div className="flex gap-3 w-full">
+            <div className="flex gap-3 w-full flex-shrink-0">
               <button
                 onClick={handleDownloadImage}
                 className="flex-1 py-3 bg-surface-card text-content-primary rounded-2xl text-[14px] font-bold flex items-center justify-center gap-2 active:scale-[0.97] transition-all shadow-[0_2px_12px_rgba(0,0,0,0.1)]"
@@ -3698,8 +3802,8 @@ export function DiscussionPage({ discussion, onBack, onUpdateDiscussion }: Discu
                   </>
                 ) : (
                   <>
-                    <Copy className="w-4 h-4" strokeWidth={2.5} />
-                    复制图片
+                    <Share2 className="w-4 h-4" strokeWidth={2.5} />
+                    分享图片
                   </>
                 )}
               </button>

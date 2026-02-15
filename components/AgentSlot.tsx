@@ -39,7 +39,7 @@ export function AgentSlot({ agent, onClick }: AgentSlotProps) {
 
       {/* Agent Name */}
       {agent && (
-        <span className="text-[12px] text-content-primary font-medium text-center max-w-[90px] truncate">
+        <span className="text-[13px] text-content-primary font-medium text-center max-w-[90px] truncate">
           {agent.name}
         </span>
       )}

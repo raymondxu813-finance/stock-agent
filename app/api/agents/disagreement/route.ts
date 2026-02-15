@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
     let session = await getSessionAsync(sessionId);
     
     if (!session && sessionData) {
-      restoreSession(sessionData as Session);
+      await restoreSession(sessionData as Session);
       session = getSession(sessionId);
     }
     

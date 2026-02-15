@@ -1,32 +1,19 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { X, Trash2, Sun, Moon } from 'lucide-react';
+import { X, Trash2, Sun, Moon, Loader2 } from 'lucide-react';
 import type { Discussion } from '@/types';
 import { useTheme } from '@/lib/ThemeContext';
+import { getApiUrl } from '@/lib/apiConfig';
+import { rebuildDiscussionFromSession } from '@/lib/sessionToDiscussion';
 
-// 历史话题类型（保存完整的Discussion对象）
+// 历史话题类型（精简，仅用于列表展示）
 interface HistoryTopic {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
-  discussion: Discussion;
-}
-
-// localStorage key（按用户 ID 隔离）
-const HISTORY_TOPICS_KEY_PREFIX = 'multiagent_history_topics';
-
-/** 获取当前用户的历史记录 localStorage key */
-function getHistoryKey(): string {
-  try {
-    const userStr = localStorage.getItem('user');
-    if (userStr) {
-      const user = JSON.parse(userStr);
-      if (user?.id) return `${HISTORY_TOPICS_KEY_PREFIX}_${user.id}`;
-    }
-  } catch { /* ignore */ }
-  return HISTORY_TOPICS_KEY_PREFIX; // 未登录时使用默认 key
+  roundCount: number;
 }
 
 type HistoryTopicsDrawerProps = {
@@ -47,11 +34,12 @@ const getTimeGroup = (timestamp: number): 'today' | 'week' | 'earlier' => {
 };
 
 /** 可左滑删除的历史记录 item */
-function SwipeableItem({ topic, onSelect, onDelete, disabled }: {
+function SwipeableItem({ topic, onSelect, onDelete, disabled, isItemLoading }: {
   topic: HistoryTopic;
   onSelect: () => void;
   onDelete: () => void;
   disabled: boolean;
+  isItemLoading?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const startXRef = useRef(0);
@@ -181,11 +169,16 @@ function SwipeableItem({ topic, onSelect, onDelete, disabled }: {
         onClick={handleClick}
       >
         <div
-          className={`w-full text-left px-3 py-2.5 rounded-lg bg-surface-card hover:bg-surface-hover active:bg-surface-bubble transition-colors cursor-pointer select-none ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
+          className={`w-full text-left px-3 py-2.5 rounded-lg bg-surface-card hover:bg-surface-hover active:bg-surface-bubble transition-colors cursor-pointer select-none relative ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
         >
           <p className="text-[14px] text-content-primary line-clamp-2 leading-relaxed">
             {topic.title}
           </p>
+          {isItemLoading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-surface-card/70 rounded-lg">
+              <Loader2 className="w-4 h-4 text-content-muted animate-spin" />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -194,65 +187,107 @@ function SwipeableItem({ topic, onSelect, onDelete, disabled }: {
 
 export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading = false }: HistoryTopicsDrawerProps) {
   const [historyTopics, setHistoryTopics] = useState<HistoryTopic[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [loadingTopicId, setLoadingTopicId] = useState<string | null>(null); // 正在加载的 topic ID
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const { isDark: isDarkMode, toggleTheme } = useTheme();
 
-  // 从localStorage加载历史话题
+  // 从服务器加载历史话题（唯一数据源）
   useEffect(() => {
-    const loadHistoryTopics = () => {
-      try {
-        const stored = localStorage.getItem(getHistoryKey());
-        if (stored) {
-          const topics = JSON.parse(stored) as any[];
-          const validTopics = topics
-            .filter(t => t && t.id && t.title && t.discussion)
-            .map(t => ({
-              id: t.id,
-              title: t.title,
-              createdAt: t.createdAt || Date.now(),
-              updatedAt: t.updatedAt || t.createdAt || Date.now(),
-              discussion: t.discussion,
-            })) as HistoryTopic[];
+    if (!isOpen) return;
 
-          const sortedTopics = validTopics.sort((a, b) => b.updatedAt - a.updatedAt);
-          setHistoryTopics(sortedTopics);
-        } else {
+    let cancelled = false;
+
+    const loadServerTopics = async () => {
+      setIsLoadingHistory(true);
+      try {
+        const res = await fetch(getApiUrl('/api/sessions/history?limit=50'));
+        if (!res.ok) {
+          // 401/403 说明 auth 已失效，由全局 fetch 拦截器处理跳转登录，
+          // 这里不清空历史（保留当前列表直到页面跳转）
+          if (res.status === 401 || res.status === 403) {
+            console.warn('[HistoryTopicsDrawer] Auth expired, skipping history clear');
+            return;
+          }
           setHistoryTopics([]);
+          return;
         }
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (!data.sessions || !Array.isArray(data.sessions)) {
+          setHistoryTopics([]);
+          return;
+        }
+
+        const topics: HistoryTopic[] = data.sessions.map((s: any) => ({
+          id: s.id,
+          title: s.topicTitle || '未命名讨论',
+          createdAt: s.createdAt || Date.now(),
+          updatedAt: s.createdAt || Date.now(),
+          roundCount: s.roundCount || 0,
+        }));
+
+        setHistoryTopics(topics);
       } catch (error) {
-        console.error('[HistoryTopicsDrawer] Error loading history topics:', error);
-        setHistoryTopics([]);
+        console.error('[HistoryTopicsDrawer] Error loading history:', error);
+        if (!cancelled) setHistoryTopics([]);
+      } finally {
+        if (!cancelled) setIsLoadingHistory(false);
       }
     };
-    loadHistoryTopics();
+
+    loadServerTopics();
     setShowClearConfirm(false);
+
+    return () => { cancelled = true; };
   }, [isOpen]);
 
-  const handleTopicClick = (historyTopic: HistoryTopic) => {
-    onClose();
-    onSelectTopic(historyTopic.discussion);
-  };
-
-  /** 删除单条记录 */
-  const handleDeleteTopic = (topicId: string) => {
-    const updated = historyTopics.filter(t => t.id !== topicId);
-    setHistoryTopics(updated);
+  /** 点击历史记录：先拉取完整 session，重建 Discussion 后进入讨论页 */
+  const handleTopicClick = async (historyTopic: HistoryTopic) => {
+    if (loadingTopicId) return; // 防止重复点击
+    setLoadingTopicId(historyTopic.id);
     try {
-      localStorage.setItem(getHistoryKey(), JSON.stringify(updated));
-    } catch (e) {
-      console.error('[HistoryTopicsDrawer] Error saving after delete:', e);
+      const res = await fetch(getApiUrl(`/api/sessions?id=${historyTopic.id}`));
+      if (!res.ok) {
+        console.error('[HistoryTopicsDrawer] Failed to fetch session:', res.status);
+        alert('加载讨论失败，请稍后重试');
+        return;
+      }
+      const { session } = await res.json();
+      if (!session) {
+        alert('讨论数据不存在');
+        return;
+      }
+      const discussion = rebuildDiscussionFromSession(session);
+      onClose();
+      onSelectTopic(discussion);
+    } catch (error) {
+      console.error('[HistoryTopicsDrawer] Error loading session:', error);
+      alert('加载讨论失败，请检查网络连接');
+    } finally {
+      setLoadingTopicId(null);
     }
   };
 
-  /** 清空全部历史 */
+  /** 删除单条记录（服务器 + 本地状态） */
+  const handleDeleteTopic = (topicId: string) => {
+    setHistoryTopics((prev) => prev.filter((t) => t.id !== topicId));
+    // 异步通知服务器删除
+    fetch(getApiUrl(`/api/sessions/history?id=${topicId}`), { method: 'DELETE' }).catch((e) => {
+      console.error('[HistoryTopicsDrawer] Error deleting from server:', e);
+    });
+  };
+
+  /** 清空全部历史（逐条删除） */
   const handleClearAll = () => {
+    const ids = historyTopics.map((t) => t.id);
     setHistoryTopics([]);
     setShowClearConfirm(false);
-    try {
-      localStorage.removeItem(getHistoryKey());
-    } catch (e) {
-      console.error('[HistoryTopicsDrawer] Error clearing history:', e);
-    }
+    // 异步逐条通知服务器删除
+    ids.forEach((id) => {
+      fetch(getApiUrl(`/api/sessions/history?id=${id}`), { method: 'DELETE' }).catch(() => {});
+    });
   };
 
   // Group topics by time
@@ -268,7 +303,8 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
           topic={historyTopic}
           onSelect={() => handleTopicClick(historyTopic)}
           onDelete={() => handleDeleteTopic(historyTopic.id)}
-          disabled={isLoading}
+          disabled={isLoading || (!!loadingTopicId && loadingTopicId !== historyTopic.id)}
+          isItemLoading={loadingTopicId === historyTopic.id}
         />
       ))}
     </div>
@@ -303,7 +339,20 @@ export function HistoryTopicsDrawer({ isOpen, onClose, onSelectTopic, isLoading 
 
         {/* Scrollable History */}
         <div className="flex-1 overflow-y-auto">
-          {historyTopics.length === 0 ? (
+          {isLoadingHistory ? (
+            /* 骨架屏 */
+            <div className="px-5 pt-5 space-y-3">
+              <div className="h-3 w-10 bg-surface-hover rounded animate-pulse" />
+              {[1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="px-3 py-2.5 rounded-lg bg-surface-hover/50">
+                  <div className="space-y-2">
+                    <div className="h-3.5 bg-surface-hover rounded animate-pulse" style={{ width: `${70 + (i * 7) % 30}%`, animationDelay: `${i * 100}ms` }} />
+                    <div className="h-3.5 bg-surface-hover rounded animate-pulse" style={{ width: `${40 + (i * 13) % 40}%`, animationDelay: `${i * 100 + 50}ms` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : historyTopics.length === 0 ? (
             <div className="px-5 py-12 text-center">
               <p className="text-[14px] text-content-muted">暂无历史讨论</p>
             </div>

@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     // 优先内存 -> 持久化存储 -> sessionData 恢复
     let session = await getSessionAsync(sessionId);
     if (!session && sessionData) {
-      restoreSession(sessionData as Session);
+      await restoreSession(sessionData as Session);
       session = getSession(sessionId);
     }
 

@@ -107,6 +107,14 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* H5 端字号整体放大：移动端 (<640px) 所有 px 字号提升约 13% */
+@media (max-width: 640px) {
+  html {
+    -webkit-text-size-adjust: 113%;
+    text-size-adjust: 113%;
+  }
+}
+
 /* Custom scrollbar for webkit browsers */
 ::-webkit-scrollbar {
   width: 4px;

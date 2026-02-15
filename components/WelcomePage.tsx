@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Menu, SendHorizontal, LogOut } from 'lucide-react';
 import { getApiUrl } from '@/lib/apiConfig';
 import type { Discussion, AvatarType } from '@/types';
@@ -33,8 +33,7 @@ function getHistoryKey(): string {
   } catch { /* ignore */ }
   return HISTORY_TOPICS_KEY_PREFIX;
 }
-// 持久化已选 agent 的 localStorage key
-const SELECTED_AGENTS_KEY = 'multiagent_selected_agents';
+// (localStorage key 已废弃，专家团选择现在完全由服务器管理)
 
 type WelcomePageProps = {
   onCreateDiscussion: (discussion: Discussion) => void;
@@ -185,50 +184,105 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
   const [isInputMultiLine, setIsInputMultiLine] = useState(false);
   const topicsScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // agent 选择状态（初始为空，由 useEffect 从 localStorage 加载或随机生成）
+  // agent 选择状态（纯服务器管理，不依赖 localStorage）
   const [selectedAgents, setSelectedAgents] = useState<typeof ALL_AGENTS>([]);
+  const [isLoadingAgents, setIsLoadingAgents] = useState(true);
 
-  // 首次加载：从 localStorage 恢复已选 agent，若无则随机选 4 位并持久化
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(SELECTED_AGENTS_KEY);
-      if (stored) {
-        const ids: string[] = JSON.parse(stored);
-        const restored = ids
-          .map(id => ALL_AGENTS.find(a => a.id === id))
-          .filter(Boolean) as typeof ALL_AGENTS;
-        if (restored.length >= MIN_SLOTS && restored.length <= MAX_SLOTS) {
-          setSelectedAgents(restored);
-          return;
-        }
-      }
-    } catch (e) {
-      console.error('[WelcomePage] Error loading persisted agents:', e);
+  // 标记是否已从服务器加载完成（避免加载期间的变更触发保存）
+  const serverLoadedRef = useRef(false);
+  // 防抖定时器
+  const saveDebouncerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** 从 agentIds 数组恢复完整的 agent 对象 */
+  const restoreAgentsFromIds = useCallback((ids: string[]): typeof ALL_AGENTS | null => {
+    const restored = ids
+      .map(id => ALL_AGENTS.find(a => a.id === id))
+      .filter(Boolean) as typeof ALL_AGENTS;
+    if (restored.length >= MIN_SLOTS && restored.length <= MAX_SLOTS) {
+      return restored;
     }
-    // 首次访问或数据异常：随机选 4 位
-    const shuffled = [...ALL_AGENTS].sort(() => Math.random() - 0.5);
-    const defaults = shuffled.slice(0, 4);
-    setSelectedAgents(defaults);
-    try {
-      localStorage.setItem(SELECTED_AGENTS_KEY, JSON.stringify(defaults.map(a => a.id)));
-    } catch (e) {
-      console.error('[WelcomePage] Error persisting default agents:', e);
-    }
+    return null;
   }, []);
 
-  // 每次选择变更后持久化（跳过初始空数组）
+  /** 生成随机默认选择 */
+  const generateDefaults = useCallback((): typeof ALL_AGENTS => {
+    const shuffled = [...ALL_AGENTS].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, 4);
+  }, []);
+
+  // 首次加载：从服务器拉取专家团偏好
+  useEffect(() => {
+    const loadFromServer = async () => {
+      setIsLoadingAgents(true);
+      try {
+        const res = await fetch(getApiUrl('/api/user/preferences'));
+
+        // 401/403：auth 过期，不生成随机默认值（由 auth 层处理跳转登录）
+        if (res.status === 401 || res.status === 403) {
+          console.warn('[WelcomePage] Auth expired, skipping agent defaults');
+          return;
+        }
+
+        if (res.ok) {
+          const data = await res.json();
+          const serverIds = data?.preferences?.selectedAgentIds;
+          if (Array.isArray(serverIds) && serverIds.length > 0) {
+            const restored = restoreAgentsFromIds(serverIds);
+            if (restored) {
+              setSelectedAgents(restored);
+              serverLoadedRef.current = true;
+              return;
+            }
+          }
+        }
+        // 服务器无偏好数据（200 但空）或其他非 auth 错误：生成随机默认值
+        const defaults = generateDefaults();
+        setSelectedAgents(defaults);
+        serverLoadedRef.current = true;
+        // 异步保存到服务器（不阻塞 UI）
+        fetch(getApiUrl('/api/user/preferences'), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferences: { selectedAgentIds: defaults.map(a => a.id) } }),
+        }).catch(() => {});
+      } catch (e) {
+        console.error('[WelcomePage] Error loading preferences from server:', e);
+        // 网络错误：生成随机默认值，后续选择变更时再同步
+        const defaults = generateDefaults();
+        setSelectedAgents(defaults);
+        serverLoadedRef.current = true;
+      } finally {
+        setIsLoadingAgents(false);
+      }
+    };
+
+    loadFromServer();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 每次选择变更后防抖保存到服务器
   const isInitialMount = useRef(true);
   useEffect(() => {
     if (isInitialMount.current) {
       isInitialMount.current = false;
       return;
     }
-    if (selectedAgents.length === 0) return; // 防止初始空状态覆盖
-    try {
-      localStorage.setItem(SELECTED_AGENTS_KEY, JSON.stringify(selectedAgents.map(a => a.id)));
-    } catch (e) {
-      console.error('[WelcomePage] Error persisting agent selection:', e);
-    }
+    if (selectedAgents.length === 0) return;
+    if (!serverLoadedRef.current) return;
+
+    const agentIds = selectedAgents.map(a => a.id);
+
+    // 防抖保存到服务器
+    if (saveDebouncerRef.current) clearTimeout(saveDebouncerRef.current);
+    saveDebouncerRef.current = setTimeout(() => {
+      fetch(getApiUrl('/api/user/preferences'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferences: { selectedAgentIds: agentIds } }),
+      }).catch((e) => {
+        console.error('[WelcomePage] Error saving preferences to server:', e);
+      });
+    }, 500);
   }, [selectedAgents]);
 
   // Track active topic card scroll position
@@ -411,15 +465,15 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
         maxSlots={MAX_SLOTS}
       />
 
-      {/* Header */}
-      <div className="relative px-5 py-4 flex items-center justify-between">
+      {/* Header — 固定在顶部 */}
+      <div className="relative px-5 py-3 flex items-center justify-between flex-shrink-0">
         <button
           onClick={() => setIsDrawerOpen(true)}
           className="w-10 h-10 rounded-full flex items-center justify-center active:scale-95 transition-transform"
         >
           <Menu className="w-5 h-5 text-content-primary" strokeWidth={1.5} />
         </button>
-        <h1 className="text-[16px] font-medium text-content-primary">LeapAgents</h1>
+        <h1 className="text-[17px] font-medium text-content-primary">LeapAgents</h1>
         {onLogout ? (
           <button
             onClick={onLogout}
@@ -433,6 +487,9 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
         )}
       </div>
 
+      {/* 可滚动内容区域 — 适应不同机型高度 */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden pb-24">
+
       {/* Brand Header — Figma BrandHeader 风格 */}
       <div className="relative pt-8 pb-6">
         {/* Centered Brand Icon — Figma GreenSphere */}
@@ -445,18 +502,18 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
             <div className="absolute bottom-0 right-[38%] w-1 h-1 bg-[#AAE874] rounded-full opacity-45 animate-pulse" style={{ animationDelay: '1.7s' }} />
           </div>
           {/* Brand Avatar — 100px */}
-          <div className="relative z-10 drop-shadow-2xl">
+          <div className="relative z-10">
             <img src="/brand-avatar.png" alt="LeapAgents" width={100} height={100} className="rounded-full" />
           </div>
         </div>
 
         {/* Left-Aligned Text Content */}
         <div className="px-5 text-center space-y-2">
-          <p className="text-[14px] text-content-muted leading-relaxed">
+          <p className="text-[15px] text-content-muted leading-relaxed">
             一个视角，难免有盲区
           </p>
-          <h2 className="text-[22px] text-content-primary font-medium">多位专家交锋，越辩越明</h2>
-          <p className="text-[14px] text-content-muted leading-relaxed">
+          <h2 className="text-[24px] text-content-primary font-medium">多位专家交锋，越辩越明</h2>
+          <p className="text-[15px] text-content-muted leading-relaxed">
             组建你的 AI 专家团，开始讨论
           </p>
         </div>
@@ -464,30 +521,45 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
 
       {/* 2x3 Agent Slot Grid */}
       <div className="relative px-5 pb-4">
-        <div className="flex flex-col items-center gap-8 mb-4">
-          {/* Row 1 */}
-          <div className="flex justify-center gap-8">
-            {slots.slice(0, 3).map((agent, index) => (
-              <AgentSlot
-                key={index}
-                agent={agent || undefined}
-                onClick={() => setIsSheetOpen(true)}
-              />
-            ))}
+        {isLoadingAgents ? (
+          /* 骨架屏：加载专家团偏好时显示 */
+          <div className="flex flex-col items-center gap-8 mb-4">
+            <div className="flex justify-center gap-8">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="w-[72px] h-[72px] rounded-full bg-surface-hover animate-pulse" />
+              ))}
+            </div>
+            <div className="flex justify-center gap-8">
+              {[3, 4, 5].map((i) => (
+                <div key={i} className="w-[72px] h-[72px] rounded-full bg-surface-hover animate-pulse" />
+              ))}
+            </div>
           </div>
+        ) : (
+          <div className="flex flex-col items-center gap-8 mb-4">
+            {/* Row 1 */}
+            <div className="flex justify-center gap-8">
+              {slots.slice(0, 3).map((agent, index) => (
+                <AgentSlot
+                  key={index}
+                  agent={agent || undefined}
+                  onClick={() => setIsSheetOpen(true)}
+                />
+              ))}
+            </div>
 
-          {/* Row 2 */}
-          <div className="flex justify-center gap-8">
-            {slots.slice(3, 6).map((agent, index) => (
-              <AgentSlot
-                key={index + 3}
-                agent={agent || undefined}
-                onClick={() => setIsSheetOpen(true)}
-              />
-            ))}
+            {/* Row 2 */}
+            <div className="flex justify-center gap-8">
+              {slots.slice(3, 6).map((agent, index) => (
+                <AgentSlot
+                  key={index + 3}
+                  agent={agent || undefined}
+                  onClick={() => setIsSheetOpen(true)}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-
+        )}
       </div>
 
       {/* Recommended Topics Carousel */}
@@ -508,7 +580,7 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
                   <span className="text-[14px]">💡</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-[13px] text-content-primary font-medium truncate">
+                  <p className="text-[14px] text-content-primary font-medium truncate">
                     {topicText}
                   </p>
                 </div>
@@ -531,8 +603,7 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
         </div>
       </div>
 
-      {/* Spacer */}
-      <div className="flex-1" />
+      </div>{/* 关闭可滚动内容区域 */}
 
       {/* Bottom Action Bar — 与讨论页底部栏对齐 */}
       <div className="absolute bottom-0 left-0 right-0 z-50">
@@ -540,7 +611,7 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
         <div className="absolute inset-0 backdrop-blur-xl" style={{ background: `linear-gradient(to top, rgba(170,232,116,0.10), var(--color-glass-strong), var(--color-glass-medium))` }} />
 
         {/* Input Bar Container */}
-        <div className={`relative flex gap-3 px-5 py-4 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
+        <div className={`relative flex gap-3 px-5 py-3 ${isInputMultiLine ? 'items-end' : 'items-center'}`}>
           {/* Input Field */}
           <div className="flex-1 relative">
             <textarea
@@ -555,7 +626,7 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
               }}
               placeholder="输入话题，开始讨论..."
               rows={1}
-              className="block w-full px-5 bg-surface-input border border-line text-[14px] text-content-primary placeholder:text-content-placeholder resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="block w-full px-5 bg-surface-input border border-line text-[15px] text-content-primary placeholder:text-content-placeholder resize-none focus:outline-none focus:border-[#AAE874] focus:shadow-[0_0_0_3px_rgba(170,232,116,0.1)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               style={{
                 height: '40px',
                 maxHeight: '98px',
@@ -599,8 +670,8 @@ export function WelcomePage({ onCreateDiscussion, onLogout }: WelcomePageProps) 
             )}
           </button>
         </div>
-        {/* Safe area spacer for iPhone */}
-        <div style={{ height: 'env(safe-area-inset-bottom, 0px)' }} />
+        {/* Safe area spacer for iPhone — 兼容 Safari 底部工具栏 */}
+        <div style={{ height: 'env(safe-area-inset-bottom, 8px)' }} />
       </div>
     </div>
   );

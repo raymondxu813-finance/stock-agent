@@ -123,14 +123,27 @@ export class RedisSessionStore implements SessionStore {
       const results = await this.client.mget(...keys);
 
       const sessions: Session[] = [];
-      for (const data of results) {
-        if (data) {
+      const expiredIds: string[] = [];
+
+      for (let i = 0; i < results.length; i++) {
+        if (results[i]) {
           try {
-            sessions.push(JSON.parse(data) as Session);
+            sessions.push(JSON.parse(results[i] as string) as Session);
           } catch {
             // 跳过损坏的数据
           }
+        } else {
+          // session 数据已过期，记录以便清理索引
+          expiredIds.push(sessionIds[i]);
         }
+      }
+
+      // 异步清理 Sorted Set 中已过期的 session 索引
+      if (expiredIds.length > 0) {
+        logger.info({ userId, expiredIds }, '[RedisSessionStore] Cleaning up expired session index entries');
+        this.client.zrem(`${USER_INDEX_PREFIX}${userId}`, ...expiredIds).catch((err) => {
+          logger.warn({ err, userId }, '[RedisSessionStore] Failed to clean expired index entries');
+        });
       }
 
       return sessions;

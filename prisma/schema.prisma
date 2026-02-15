@@ -32,6 +32,8 @@ model User {
   avatar       String?
   role         String   @default("user") // "user" | "admin"
   passwordHash String   @map("password_hash")
+  // 用户偏好设置（JSON），如 { selectedAgentIds: [...] }
+  preferencesJson String? @map("preferences_json") @db.Text
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 

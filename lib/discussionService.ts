@@ -68,6 +68,15 @@ function persistSession(session: Session): void {
 }
 
 /**
+ * 更新内存 Map 并持久化到 SessionStore
+ * 供 API 路由在修改 session 后调用（如 summary 路由 push round 后）
+ */
+export function updateAndPersistSession(session: Session): void {
+  sessions.set(session.id, session);
+  persistSession(session);
+}
+
+/**
  * 生成唯一的 Session ID
  */
 function generateSessionId(): string {
@@ -480,12 +489,43 @@ export async function startSession(params: {
 }
 
 /**
- * 恢复 Session 到内存中（如果不存在）
+ * 恢复 Session 到内存中
+ *
+ * 增加版本保护：如果内存或持久化存储中已有更新的数据（rounds 更多），
+ * 则不覆盖，避免多端场景下旧数据覆盖新数据导致历史丢失。
  */
-export function restoreSession(session: Session): void {
+export async function restoreSession(session: Session): Promise<void> {
+  // 检查内存中是否已有更新的数据
+  const existing = sessions.get(session.id);
+  if (existing && existing.rounds.length >= session.rounds.length) {
+    logger.info(
+      { sessionId: session.id, existingRounds: existing.rounds.length, incomingRounds: session.rounds.length },
+      '[discussionService] Skipped restoreSession: in-memory session has equal or more data'
+    );
+    return;
+  }
+
+  // 检查持久化存储中是否有更新的数据
+  try {
+    const store = getSessionStore();
+    const stored = await store.get(session.id);
+    if (stored && stored.rounds.length >= session.rounds.length) {
+      // 持久化存储有更新数据，用它回填内存
+      sessions.set(session.id, stored);
+      logger.info(
+        { sessionId: session.id, storedRounds: stored.rounds.length, incomingRounds: session.rounds.length },
+        '[discussionService] restoreSession: using stored session (more data than incoming)'
+      );
+      return;
+    }
+  } catch (err) {
+    logger.warn({ err, sessionId: session.id }, '[discussionService] restoreSession: failed to check store');
+  }
+
+  // 内存和持久化都没有更新的数据，使用传入的 session
   sessions.set(session.id, session);
   persistSession(session);
-  logger.info({ sessionId: session.id, totalSessions: sessions.size }, '[discussionService] Session restored');
+  logger.info({ sessionId: session.id, rounds: session.rounds.length }, '[discussionService] Session restored');
 }
 
 /**
@@ -520,8 +560,8 @@ export async function runRoundWithProgress(
   // 如果内存中不存在，尝试从 sessionData 恢复
   if (!session && sessionData) {
     console.log(`[discussionService] Session not in memory, restoring from provided data`);
-    restoreSession(sessionData);
-    session = sessionData;
+    await restoreSession(sessionData);
+    session = sessions.get(sessionId) || sessionData;
   }
   
   if (!session) {

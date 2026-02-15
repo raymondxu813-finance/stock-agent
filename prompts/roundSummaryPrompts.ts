@@ -166,6 +166,10 @@ export interface RoundSummary {
     supportingAgents: string[];
     supportCount: number;
     totalAgents: number;
+    /** 共识强度（强/中/弱） */
+    strength?: 'strong' | 'medium' | 'weak';
+    /** 共识推理说明 */
+    reasoning?: string;
   }>;
   
   /** 分歧焦点列表 */
@@ -175,6 +179,10 @@ export interface RoundSummary {
       agentName: string;
       position: string;
     }>;
+    /** 分歧性质（根本性/策略性/程度性） */
+    nature?: 'fundamental' | 'strategic' | 'degree';
+    /** 分歧根因 */
+    rootCause?: string;
   }>;
 
   /** v2: 亮眼观点 */
@@ -202,4 +210,21 @@ export interface RoundSummary {
     neutralAgents: string[];
     overallSentiment: 'bullish' | 'bearish' | 'neutral';
   }>;
+
+  // ─── 以下字段由前端在轮次完成时附加，用于历史恢复 ───
+
+  /** 原始发言数据（用于历史恢复时显示完整内容，含 toolCalls / sentiments） */
+  rawSpeeches?: Array<{
+    agentId: string;
+    agentName: string;
+    content: string;
+    sentiments?: Array<{ stock: string; sentiment: 'bullish' | 'bearish' | 'neutral'; confidence?: 'high' | 'medium' | 'low' }>;
+    toolCalls?: Array<{ toolName: string; args: Record<string, any>; result?: any }>;
+    completedAt?: number;
+  }>;
+
+  /** 用户提问（当本轮由用户自由提问触发时） */
+  userQuestion?: string;
+  userMentionedAgentIds?: string[];
+  userQuestionTime?: number;
 }

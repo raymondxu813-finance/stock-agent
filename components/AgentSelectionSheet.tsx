@@ -35,9 +35,10 @@ export function AgentSelectionSheet({
 
       {/* Bottom Sheet */}
       <div
-        className={`absolute inset-x-0 bottom-0 z-[60] bg-surface-card rounded-t-[28px] max-h-[80vh] flex flex-col transition-transform duration-300 ease-out ${
+        className={`absolute inset-x-0 bottom-0 z-[60] bg-surface-card rounded-t-[28px] flex flex-col transition-transform duration-300 ease-out ${
           isOpen ? 'translate-y-0 shadow-2xl' : 'translate-y-full shadow-none'
         }`}
+        style={{ maxHeight: 'calc(100% - 64px)' }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-5 pb-4">

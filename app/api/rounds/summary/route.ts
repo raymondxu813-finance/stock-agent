@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession, getSessionAsync, restoreSession, buildAgentsBriefList, parseRoundSummary } from '@/lib/discussionService';
+import { getSession, getSessionAsync, restoreSession, buildAgentsBriefList, parseRoundSummary, updateAndPersistSession } from '@/lib/discussionService';
 import type { Session } from '@/lib/discussionService';
 import { buildRoundSummaryUserPrompt } from '@/prompts/builder';
 import { roundSummarySystemPromptTemplate } from '@/prompts/roundSummaryPrompts';
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
     // 优先内存 -> 持久化存储 -> sessionData 恢复
     let session = await getSessionAsync(sessionId);
     if (!session && sessionData) {
-      restoreSession(sessionData as Session);
+      await restoreSession(sessionData as Session);
       session = getSession(sessionId);
     }
 
@@ -79,6 +79,9 @@ export async function POST(request: NextRequest) {
 
     // 保存总结到 session
     session.rounds.push(roundSummary);
+
+    // 立即持久化到内存 Map + DB/Redis（修复：之前未持久化导致多端丢数据）
+    updateAndPersistSession(session);
 
     return NextResponse.json({
       roundSummary,
