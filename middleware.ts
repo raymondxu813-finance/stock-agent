@@ -84,6 +84,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Vercel 环境下，API 请求会被 beforeFiles rewrite 代理到 ECS ALB，
+  // 鉴权由 ECS 端 middleware 处理，这里直接放行即可。
+  if (process.env.VERCEL && process.env.API_BACKEND_URL) {
+    return NextResponse.next();
+  }
+
   // === CORS 预检请求（OPTIONS）===
   // 仅在配置了 CORS_ALLOWED_ORIGINS 时处理；本地开发同源不会发送 OPTIONS
   if (request.method === 'OPTIONS' && isOriginAllowed(origin)) {
